@@ -1,9 +1,5 @@
-# Python cache
+.env
+*.db
 __pycache__/
 *.pyc
-
-# Database
-bot.db
-
-# Env
-.env
+config.py
