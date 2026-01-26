@@ -811,8 +811,8 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat.id,
                 "✅ <b>Thank you!</b>\n\n"
                 "🤖 <b>Bot</b> ကို <b>Admin</b> အဖြစ် ခန့်ထားပြီးပါပြီး။\n"
-                "🐇  Welcome Message\n"
-                "🐇  Goodbye Message\n"
+                "🐇 <b>Welcome Message</b>\n"
+                "🐇 <b>Goodbye Message</b>\n\n"
                 "✅  စတင်အလုပ်လုပ်နေပါပြီး.........!",
                 parse_mode="HTML"
             )
