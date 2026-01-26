@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 from html import escape
 from datetime import datetime
+import logging
 
 from telegram import (
     Update,
@@ -30,6 +31,15 @@ from psycopg_pool import ConnectionPool  # ✅ ONLY THIS (Supabase safe)
 # ===============================
 # GLOBAL CACHES
 # ===============================
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.ERROR,
+)
+logger = logging.getLogger(__name__)
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Unhandled exception", exc_info=context.error)
+
 STATS_CACHE = {
     "users": 0,
     "groups": 0,
@@ -392,31 +402,30 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not member:
         return
 
-    # 🛑 DUPLICATE BLOCK (CRITICAL FIX)
-    key = (chat.id, member.id)
-    if key in LAST_GOODBYE:
+    # 🔒 Bot already kicked → STOP IMMEDIATELY
+    try:
+        await context.bot.get_chat(chat.id)
+    except Forbidden:
         return
-    LAST_GOODBYE[key] = int(time.time())
 
     if not await is_bot_admin(chat.id, context):
         return
 
     left_time = (
         left_date.strftime("%Y-%m-%d %H:%M:%S")
-        if left_date
-        else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if left_date else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     )
 
     text = build_goodbye_text(member, left_time)
 
     try:
         me = await context.bot.get_me()
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
                 "➕ ADD ME TO YOUR GROUP",
                 url=f"https://t.me/{me.username}?startgroup=true"
-            )]
-        ])
+            )
+        ]])
 
         await context.bot.send_photo(
             chat_id=chat.id,
@@ -425,8 +434,13 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_markup=keyboard
         )
-    except:
-        await context.bot.send_message(chat.id, text, parse_mode="HTML")
+
+    except Forbidden:
+        # 🚫 Bot kicked → do NOTHING
+        return
+    except Exception:
+        # other errors → silent
+        pass
 
 # ===============================
 # 📢 BROADCAST (OWNER ONLY)
@@ -810,7 +824,7 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat.id,
                 "✅ <b>Thank you!</b>\n\n"
-                "🤖 <b>Bot</b> ကို <b>Admin</b> အဖြစ် ခန့်ထားပြီးပါပြီး။\n"
+                "🤖 <b>Bot</b> ကို <b>Admin</b> အဖြစ် ခန့်ထားပြီးပါပြီး။\n\n"
                 "🐇 <b>Welcome Message</b>\n"
                 "🐇 <b>Goodbye Message</b>\n\n"
                 "✅  စတင်အလုပ်လုပ်နေပါပြီး.........!",
@@ -1175,6 +1189,7 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    app.add_error_handler(error_handler)
     # -------------------------------
     # Commands
     # -------------------------------
