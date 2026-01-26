@@ -140,12 +140,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"<b>────「 {bot_mention} 」────</b>\n\n"
             f"<b>ဟယ်လို {user_mention} ! 👋</b>\n\n"
-            "ငါသည် Group များအတွက် အသုံးဝင် Bot တစ်ခုဖြစ်တယ်။\n"
+            "<b>ငါသည် Group များအတွက် အသုံးဝင် Bot တစ်ခုဖြစ်တယ်။</b>\n"
             "<b>ငါ၏လုပ်နိုင်စွမ်းကို ကောင်းကောင်းအသုံးချပါ။</b>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📌 ငါ၏လုပ်နိုင်စွမ်း</b>\n\n"
             "✅ Welcome Message\n"
-            "✅ Goodbye Message\n"
+            "✅ Goodbye Message\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📥 ငါ့ကိုအသုံးပြုရန်</b>\n\n"
             "➕ ငါ့ကို Group ထဲထည့်ပါ\n"
@@ -810,8 +810,10 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat.id,
                 "✅ <b>Thank you!</b>\n\n"
-                "🤖 Bot ကို <b>Admin</b> အဖြစ် ခန့်ထားပြီးပါပြီး။\n"
-                "🔗  Welcome Message & Goodbye Message စနစ် စတင်အလုပ်လုပ်နေပါပြီး.........!",
+                "🤖 <b>Bot</b> ကို <b>Admin</b> အဖြစ် ခန့်ထားပြီးပါပြီး။\n"
+                "🐇  Welcome Message\n"
+                "🐇  Goodbye Message\n"
+                "✅  စတင်အလုပ်လုပ်နေပါပြီး.........!",
                 parse_mode="HTML"
             )
         except:
