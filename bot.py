@@ -655,47 +655,51 @@ async def send_content(context, chat_id, data):
 
     try:
         if data.get("photo"):
-            await context.bot.send_photo(
-                chat_id,
-                data["photo"],
-                caption=text,
+            return await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=data["photo"],
+                caption=text if text else None,
                 parse_mode="HTML"
             )
 
-        elif data.get("video"):
-            await context.bot.send_video(
-                chat_id,
-                data["video"],
-                caption=text,
+        if data.get("video"):
+            return await context.bot.send_video(
+                chat_id=chat_id,
+                video=data["video"],
+                caption=text if text else None,
                 parse_mode="HTML"
             )
 
-        elif data.get("audio"):
-            await context.bot.send_audio(
-                chat_id,
-                data["audio"],
-                caption=text,
+        if data.get("audio"):
+            return await context.bot.send_audio(
+                chat_id=chat_id,
+                audio=data["audio"],
+                caption=text if text else None,
                 parse_mode="HTML"
             )
 
-        elif data.get("document"):
-            await context.bot.send_document(
-                chat_id,
-                data["document"],
-                caption=text,
+        if data.get("document"):
+            return await context.bot.send_document(
+                chat_id=chat_id,
+                document=data["document"],
+                caption=text if text else None,
                 parse_mode="HTML"
             )
 
-        else:
-            await context.bot.send_message(
-                chat_id,
-                text,
+        if text:
+            return await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
                 parse_mode="HTML"
             )
 
+    except Forbidden:
+        # bot kicked / blocked → silent
+        return
+    except BadRequest:
+        return
     except Exception:
-        # let caller (safe_send) + broadcast logic handle cleanup
-        raise
+        return
 
 # ===============================
 # Auto leave job (FIXED)
