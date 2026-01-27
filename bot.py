@@ -154,8 +154,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>ငါ၏လုပ်နိုင်စွမ်းကို ကောင်းကောင်းအသုံးချပါ။</b>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📌 ငါ၏လုပ်နိုင်စွမ်း</b>\n\n"
-            "✅ Welcome Message\n"
-            "✅ Goodbye Message\n\n"
+            "✅ Welcome Message ( Member Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )\n"
+            "✅ Goodbye Message ( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📥 ငါ့ကိုအသုံးပြုရန်</b>\n\n"
             "➕ ငါ့ကို Group ထဲထည့်ပါ\n"
@@ -299,19 +299,32 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # TEXT BUILDERS (SAFE)
 # ===============================
 def build_welcome_text(chat, member, joined_time):
+    # group title + link (only works well for public groups with username)
+    group_title = escape(chat.title or "Group")
+    if getattr(chat, "username", None):
+        group_link = f"https://t.me/{chat.username}"
+        group_title_link = f"<a href='{group_link}'>{group_title}</a>"
+    else:
+        # private group → no public link
+        group_title_link = group_title
+
+    # user name mention (clickable)
     name = escape(member.first_name or "User")
-    username = f"@{member.username}" if member.username else "No Username"
     mention = f"<a href='tg://user?id={member.id}'>{name}</a>"
 
-    return (
-        f"✨ <b>Welcome to {escape(chat.title or 'Group')}</b> ✨\n\n"
-        f"👤 Name: {name}\n"
-        f"🆔 User ID: {member.id}\n"
-        f"👤 Username: {username}\n"
-        f"🔗 Mention: {mention}\n"
-        f"⏰ Joined at: {joined_time}"
-    )
+    # username clickable (only if user has username)
+    if member.username:
+        username_link = f"<a href='https://t.me/{escape(member.username)}'>@{escape(member.username)}</a>"
+    else:
+        username_link = "No Username"
 
+    return (
+        f"✨ <b>Welcome to {group_title_link}</b> ✨\n\n"
+        f"👤 Name: {mention}\n"
+        f"🆔 User ID: <code>{member.id}</code>\n"
+        f"👤 Username: {username_link}\n"
+        f"⏰ Joined at: {escape(joined_time)}"
+    )
 
 def build_goodbye_text(member, left_time):
     name = escape(member.first_name or "User")
