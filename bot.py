@@ -154,8 +154,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>ငါ၏လုပ်နိုင်စွမ်းကို ကောင်းကောင်းအသုံးချပါ။</b>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📌 ငါ၏လုပ်နိုင်စွမ်း</b>\n\n"
-            "✅ Welcome Message ( Member Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )\n"
-            "✅ Goodbye Message ( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )\n\n"
+            "✅ Welcome Message\n"
+            "( Member Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )\n"
+            "✅ Goodbye Message\n"
+            "( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📥 ငါ့ကိုအသုံးပြုရန်</b>\n\n"
             "➕ ငါ့ကို Group ထဲထည့်ပါ\n"
@@ -456,7 +458,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 # ===============================
-# 📢 BROADCAST (OWNER ONLY)
+# 📢 BROADCAST (OWNER ONLY) ✅ FIXED
 # ===============================
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -467,16 +469,23 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    text = msg.text or msg.caption
-    if text and text.startswith("/broadcast"):
+    src = msg
+
+    # 🔁 If command is reply → use replied message as source
+    if msg.reply_to_message:
+        src = msg.reply_to_message
+
+    # 📝 Extract text
+    text = msg.text or msg.caption or ""
+    if text.startswith("/broadcast"):
         text = text.replace("/broadcast", "", 1).strip()
 
     content = {
-        "text": text,
-        "photo": msg.photo[-1].file_id if msg.photo else None,
-        "video": msg.video.file_id if msg.video else None,
-        "audio": msg.audio.file_id if msg.audio else None,
-        "document": msg.document.file_id if msg.document else None,
+        "text": text if text else None,
+        "photo": src.photo[-1].file_id if src.photo else None,
+        "video": src.video.file_id if src.video else None,
+        "audio": src.audio.file_id if src.audio else None,
+        "document": src.document.file_id if src.document else None,
     }
 
     if not any(v for v in content.values() if v):
@@ -1245,13 +1254,10 @@ def main():
     # -------------------------------
     # Broadcast
     # -------------------------------
-    app.add_handler(
-        MessageHandler(
-            filters.User(OWNER_ID)
-            & (filters.TEXT | filters.CAPTION)
-            & filters.Regex(r"^/broadcast"),
-            broadcast
-        )
+    MessageHandler(
+        filters.User(OWNER_ID)
+        & (filters.TEXT | filters.CAPTION | filters.PHOTO | filters.VIDEO | filters.Document.ALL),
+        broadcast
     )
 
     app.add_handler(CallbackQueryHandler(
