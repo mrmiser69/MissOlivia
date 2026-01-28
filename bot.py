@@ -1126,7 +1126,7 @@ async def refresh_admin_cache(app):
     verified = 0
     skipped = 0
 
-    now = int(time.time())
+    now = time.time_ns()
 
     for row in rows:
         gid = row["group_id"]
@@ -1163,14 +1163,30 @@ async def refresh_admin_cache(app):
                 )
 
         except Exception as e:
-            # ❗ API error → DB မထိ
-            print(f"⚠️ Skip admin check for {gid}: {e}")
-            skipped += 1
+            # ✅ API error -> DO NOT TOUCH DB (keeps old values)
+            print(f"⚠️ Skip admin check for {gid}: {e}", flush=True)
 
         await asyncio.sleep(0.1)
 
-    print(f"✅ Admin cache verified: {verified}")
-    print(f"⚠️ Non-admin groups marked: {skipped}")
+    print(f"✅ Admin cache verified: {verified}", flush=True)
+    print(f"⚠️ Non-admin groups marked: {skipped}", flush=True)
+
+    return now  # ✅ IMPORTANT: return this run's timestamp
+
+# ===============================
+# purge non admin groups verified
+# ===============================
+async def purge_non_admin_groups_verified(now: int):
+    # Only delete rows that were VERIFIED in this startup run
+    await db_execute(
+        """
+        DELETE FROM groups
+        WHERE is_admin_cached = FALSE
+          AND last_checked_at = %s
+        """,
+        (now,)
+    )
+    print("🧹 Startup purge: verified non-admin groups removed", flush=True)
 
 # ===============================
 # /refresh_all (OWNER ONLY - FINAL SAFE VERSION)
@@ -1326,8 +1342,10 @@ def main():
         await init_db()
         print("✅ DB init done", flush=True)
 
-        await refresh_admin_cache(app)
+        now = await refresh_admin_cache(app)
         print("✅ Admin cache refreshed", flush=True)
+        
+        await purge_non_admin_groups_verified(now)
 
         print("🤖 MissOlivia Bot running (PRODUCTION READY)", flush=True)
 
