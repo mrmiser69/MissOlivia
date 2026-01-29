@@ -397,6 +397,56 @@ async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await bot.send_message(chat.id, text, parse_mode="HTML")
 
 # ===============================
+# 👋 Welcome ChatMember
+# ===============================
+async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    cm = update.chat_member
+    if not chat or chat.type not in ("group", "supergroup") or not cm:
+        return
+
+    old_status = cm.old_chat_member.status
+    new_status = cm.new_chat_member.status
+    user = cm.new_chat_member.user
+
+    # ✅ user joined (left/kicked -> member)
+    if old_status in ("left", "kicked") and new_status == "member":
+        # bot ကို welcome မလုပ်
+        me = await context.bot.get_me()
+        if user.id == me.id:
+            return
+
+        # bot admin မဟုတ်ရင် မပို့
+        if not await is_bot_admin(chat.id, context):
+            return
+
+        joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        text = build_welcome_text(chat, user, joined_time)
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                "➕ ADD ME TO YOUR GROUP",
+                url=f"https://t.me/{me.username}?startgroup=true"
+            )]
+        ])
+
+        try:
+            msg = await context.bot.send_photo(
+                chat_id=chat.id,
+                photo=WELCOME_IMAGE,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+            LAST_WELCOME[chat.id] = msg.message_id
+        except Forbidden:
+            return
+        except Exception:
+            # fallback
+            with contextlib.suppress(Exception):
+                await context.bot.send_message(chat.id, text, parse_mode="HTML")
+
+# ===============================
 # 👋 GOODBYE MESSAGE (ON LEAVE)
 # ===============================
 async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1272,7 +1322,11 @@ def main():
         MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome),
         group=5
     )
-    
+    app.add_handler(
+        ChatMemberHandler(welcome_chat_member, ChatMemberHandler.CHAT_MEMBER),
+        group=6
+    )
+
     # -------------------------------
     # GOODBYE
     # -------------------------------
