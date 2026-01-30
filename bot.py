@@ -8,6 +8,7 @@ import contextlib
 from html import escape
 from datetime import datetime
 import logging
+from telegram.ext import PreCheckoutQueryHandler
 
 from telegram import (
     Update,
@@ -171,11 +172,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if bot_username:
             buttons.append([
                 InlineKeyboardButton(
-                    "➕ ADD ME TO YOUR GROUP",
+                    "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
                     url=f"https://t.me/{bot_username}?startgroup=true"
                 )
             ])
-
+        
+        # ✅ Donate Us button (Callback)
+        buttons.append([
+            InlineKeyboardButton("💖 DONATE US", callback_data="donate_menu")
+        ])
+        
         buttons.append([
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
             InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
@@ -231,13 +237,172 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(
-                    "⭐️ GIVE ADMIN PERMISSION",
+                    "⭐ 𝗚𝗜𝗩𝗘 𝗔𝗗𝗠𝗜𝗡 𝗣𝗘𝗥𝗠𝗜𝗦𝗦𝗜𝗢𝗡",
                     url=f"https://t.me/{bot_username}?startgroup=true"
                 )
             ]])
         )
         return
- 
+
+# ===============================
+# Donate Callback
+# =============================== 
+async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not query.message:
+        return
+
+    await query.answer()
+
+    data = (query.data or "").strip()
+
+    # This donate UI only makes sense in private chat
+    if query.message.chat.type != "private":
+        return
+
+    bot = context.bot
+    bot_username = bot.username or ""
+    user = update.effective_user
+
+    # --- 1) Donate Menu ---
+    if data == "donate_menu":
+        donate_text = (
+            "<b>💖 Support Us !</b>\n\n"
+            "မင်းအတွက် အလုပ်ကောင်းကောင်းလုပ်နေတဲ့ Bot ကို Support ပေးနိုင်ပါတယ်။\n\n"
+            "<b>👇 အောက်ကနေ ရွေးပါ</b>"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⭐️ 𝐒𝐮𝐩𝐩𝐨𝐫𝐭 𝐁𝐨𝐭 (5 Stars)", callback_data="donate_stars_5")],
+            [InlineKeyboardButton("🪙 𝐒𝐮𝐩𝐩𝐨𝐫𝐭 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫 (TON)", callback_data="donate_ton")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="donate_back_start")],
+        ])
+
+        # Your /start is a PHOTO message -> edit_caption
+        await query.message.edit_caption(
+            caption=donate_text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        return
+
+    # --- 2) Back to original /start ---
+    if data == "donate_back_start":
+        # rebuild original caption + keyboard exactly like /start private
+        user_name = escape(user.first_name or "User")
+        bot_name = escape(bot.first_name or "Bot")
+        user_mention = f"<a href='tg://user?id={user.id}'>{user_name}</a>"
+        bot_mention = (
+            f"<a href='https://t.me/{bot_username}'>{bot_name}</a>"
+            if bot_username else bot_name
+        )
+
+        start_text = (
+            f"<b>────「 {bot_mention} 」────</b>\n\n"
+            f"<b>ဟယ်လို {user_mention} ! 👋</b>\n\n"
+            "<b>ငါသည် Group များအတွက် အသုံးဝင် Bot တစ်ခုဖြစ်တယ်။</b>\n"
+            "<b>ငါ၏လုပ်နိုင်စွမ်းကို ကောင်းကောင်းအသုံးချပါ။</b>\n\n"
+            "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
+            "<b>📌 ငါ၏လုပ်နိုင်စွမ်း</b>\n\n"
+            "✅ Welcome Message\n"
+            "( Member Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )\n"
+            "✅ Goodbye Message\n"
+            "( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )\n\n"
+            "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
+            "<b>📥 ငါ့ကိုအသုံးပြုရန်</b>\n\n"
+            "➕ ငါ့ကို Group ထဲထည့်ပါ\n"
+            "⭐️ ငါ့ကို Admin ပေးပါ"
+        )
+
+        buttons = []
+        if bot_username:
+            buttons.append([
+                InlineKeyboardButton(
+                    "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
+                    url=f"https://t.me/{bot_username}?startgroup=true"
+                )
+            ])
+
+        buttons.append([InlineKeyboardButton("💖 DONATE US", callback_data="donate_menu")])
+
+        buttons.append([
+            InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
+            InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
+        ])
+
+        await query.message.edit_caption(
+            caption=start_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
+    # --- 3) TON address page ---
+    if data == "donate_ton":
+        TON_ADDRESS = os.getenv("TON_ADDRESS", "PUT_YOUR_TON_ADDRESS_HERE")
+        ton_text = (
+            "<b>🪙 Support Developer (TON)</b>\n\n"
+            f"<b>TON Address:</b>\n<code>{escape(TON_ADDRESS)}</code>\n\n"
+            "✅ Address ကို copy လုပ်ပြီး TON coin ပေးပို့နိုင်ပါတယ်ဗျ။\n"
+            "💙 Thank You For Supporting !"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="donate_menu")],
+        ])
+        await query.message.edit_caption(
+            caption=ton_text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        return
+
+    # --- 4) Stars 5 invoice ---
+    if data == "donate_stars_5":
+        # Stars invoice needs pre_checkout + successful payment handlers too
+        from telegram import LabeledPrice
+
+        try:
+            await context.bot.send_invoice(
+                chat_id=query.message.chat.id,
+                title="Support Bot ⭐️",
+                description=(
+                    "⭐️ Telegram Stars ၅ လုံးနဲ့ Bot ကို Support ပေးနိုင်ပါတယ်။\n\n"
+                    "မင်းရဲ့ အားပေးမှုက\n"
+                    "ဒီ Bot ကို ပိုကောင်းအောင် ဆက်လုပ်နိုင်ဖို့ အားအင်ဖြစ်စေပါတယ် 💙"
+                ),
+                payload=f"donate_bot_5_{user.id}",
+                currency="XTR",
+                prices=[LabeledPrice("Support", 5)],
+                provider_token="",  # Stars often use empty provider_token
+            )
+        except Exception as e:
+            # Keep UX: show error as alert, not new message spam
+            await query.answer(f"❌ Donate မလုပ်နိုင်ပါ: {e}", show_alert=True)
+        return
+
+# ===============================
+# Precheckout Callback
+# ===============================
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    if not query:
+        return
+
+    # ✅ accept only our donate payloads
+    if not (query.payload or "").startswith("donate_bot_5_"):
+        await query.answer(ok=False, error_message="Invalid payment payload.")
+        return
+
+    await query.answer(ok=True)
+
+# ===============================
+# Successful Payment Handler
+# ===============================
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg:
+        return
+    await msg.reply_text("✅ ကျေးဇူးတင်ပါတယ်! Stars Donate လုပ်ပြီးပါပြီ ⭐️") 
+
 # ===============================
 # /stats (OWNER ONLY - PRIVATE)
 # ===============================
@@ -379,7 +544,7 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(
-            "➕ ADD ME TO YOUR GROUP",
+            "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
             url=f"https://t.me/{me.username}?startgroup=true"
         )
     ]])
@@ -450,7 +615,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(
-            "➕ ADD ME TO YOUR GROUP",
+            "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
             url=f"https://t.me/{me.username}?startgroup=true"
         )
     ]])
@@ -931,7 +1096,7 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             me = await context.bot.get_me()
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton(
-                    "⭐️ GIVE ADMIN PERMISSION",
+                    "⭐ 𝗚𝗜𝗩𝗘 𝗔𝗗𝗠𝗜𝗡 𝗣𝗘𝗥𝗠𝗜𝗦𝗦𝗜𝗢𝗡",
                     url=f"https://t.me/{me.username}?startgroup=true"
                 )
             ]])
@@ -1011,7 +1176,7 @@ async def admin_reminder(context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(
-                "⭐️ GIVE ADMIN PERMISSION",
+                "⭐ 𝗚𝗜𝗩𝗘 𝗔𝗗𝗠𝗜𝗡 𝗣𝗘𝗥𝗠𝗜𝗦𝗦𝗜𝗢𝗡",
                 url=f"https://t.me/{bot.username}?startgroup=true"
             )
         ]])
@@ -1274,6 +1439,9 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("refresh", refresh))
     app.add_handler(CommandHandler("refresh_all", refresh_all))
+    app.add_handler(CallbackQueryHandler(donate_callback, pattern=r"^donate"))
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
     # -------------------------------
     # Chat Member
