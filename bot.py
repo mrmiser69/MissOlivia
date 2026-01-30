@@ -322,7 +322,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             ])
 
-        buttons.append([InlineKeyboardButton("💖 DONATE US", callback_data="donate_menu")])
+        buttons.append([InlineKeyboardButton("💖 DONATE US 💖", callback_data="donate_menu")])
 
         buttons.append([
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
@@ -363,11 +363,10 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_invoice(
                 chat_id=query.message.chat.id,
-                title="Support Bot ⭐️",
+                title="Support Bot",
                 description=(
                     "⭐️ Telegram Stars ၅ လုံးနဲ့ Bot ကို Support ပေးနိုင်ပါတယ်။\n\n"
-                    "မင်းရဲ့ အားပေးမှုက\n"
-                    "ဒီ Bot ကို ပိုကောင်းအောင် ဆက်လုပ်နိုင်ဖို့ အားအင်ဖြစ်စေပါတယ် 💙"
+                    "မင်းရဲ့ အားပေးမှုက ဒီ Bot ကို ပိုကောင်းအောင် ဆက်လုပ်နိုင်ဖို့ အားအင်ဖြစ်စေပါတယ် 💙"
                 ),
                 payload=f"donate_bot_5_{user.id}",
                 currency="XTR",
