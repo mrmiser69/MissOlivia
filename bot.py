@@ -179,7 +179,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ✅ Donate Us button (Callback)
         buttons.append([
-            InlineKeyboardButton("💖 DONATE US", callback_data="donate_menu")
+            InlineKeyboardButton("💖 DONATE US 💖", callback_data="donate_menu")
         ])
         
         buttons.append([
@@ -272,8 +272,8 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>👇 အောက်ကနေ ရွေးပါ</b>"
         )
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⭐️ 𝐒𝐮𝐩𝐩𝐨𝐫𝐭 𝐁𝐨𝐭 (5 Stars)", callback_data="donate_stars_5")],
-            [InlineKeyboardButton("🪙 𝐒𝐮𝐩𝐩𝐨𝐫𝐭 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫 (TON)", callback_data="donate_ton")],
+            [InlineKeyboardButton("⭐️ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗕𝗢𝗧 (5 Stars)", callback_data="donate_stars_5")],
+            [InlineKeyboardButton("🪙 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗗𝗘𝗩𝗘𝗟𝗢𝗣𝗘𝗥 (TON)", callback_data="donate_ton")],
             [InlineKeyboardButton("⬅️ Back", callback_data="donate_back_start")],
         ])
 
