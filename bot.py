@@ -55,6 +55,8 @@ PENDING_BROADCAST = {}
 BOT_START_TIME = int(time.time())
 LAST_WELCOME = {}   # {chat_id: message_id}
 LAST_GOODBYE = {}   # {(chat_id, user_id): timestamp}
+LAST_WELCOME_TS = {}   # {(chat_id, user_id): ts}
+LAST_GOODBYE_TS = {}   # {(chat_id, user_id): ts}
 
 # ===============================
 # CONFIG
@@ -357,7 +359,7 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     # ✅ JOIN condition (member OR restricted)  << IMPORTANT FIX
-    joined = (old_status in ("left", "kicked")) and (new_status in ("member", "restricted"))
+    joined = (old_status in ("left", "kicked")) and (new_status in ("member", "restricted", "administrator"))
     if not joined:
         return
 
@@ -367,10 +369,10 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # ✅ debounce duplicates (2-3 sec)  << IMPORTANT FIX
     now_ts = int(time.time())
-    last_ts = LAST_GOODBYE.get((chat.id, user.id))  # reuse dict as a quick timestamp store
+    last_ts = LAST_WELCOME_TS.get((chat.id, user.id))
     if last_ts and (now_ts - last_ts) < 2:
         return
-    LAST_GOODBYE[(chat.id, user.id)] = now_ts
+    LAST_WELCOME_TS[(chat.id, user.id)] = now_ts
 
     joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = build_welcome_text(chat, user, joined_time)
@@ -381,12 +383,6 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
             url=f"https://t.me/{me.username}?startgroup=true"
         )
     ]])
-
-    # 🧹 delete previous welcome (optional)
-    last_msg_id = LAST_WELCOME.get(chat.id)
-    if last_msg_id:
-        with contextlib.suppress(Exception):
-            await context.bot.delete_message(chat.id, last_msg_id)
 
     try:
         msg = await context.bot.send_photo(
@@ -444,10 +440,10 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ✅ debounce duplicates (2-3 sec)
     now_ts = int(time.time())
-    last_ts = LAST_GOODBYE.get((chat.id, user.id))
+    last_ts = LAST_GOODBYE_TS.get((chat.id, user.id))
     if last_ts and (now_ts - last_ts) < 2:
         return
-    LAST_GOODBYE[(chat.id, user.id)] = now_ts
+    LAST_GOODBYE_TS[(chat.id, user.id)] = now_ts
 
     left_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = build_goodbye_text(user, left_time)
@@ -489,8 +485,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = msg.text or msg.caption
-    if text and text.startswith("/broadcast"):
-        text = text.replace("/broadcast", "", 1).strip()
+    if not text or not text.startswith("/broadcast"):
+        return
+
+    text = text.replace("/broadcast", "", 1).strip()
 
     content = {
         "text": text,
@@ -1306,8 +1304,7 @@ def main():
     app.add_handler(
         MessageHandler(
             filters.User(OWNER_ID)
-            & (filters.TEXT | filters.CAPTION)
-            & filters.Regex(r"^/broadcast"),
+            & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL),
             broadcast
         )
     )
