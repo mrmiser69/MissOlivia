@@ -300,23 +300,20 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===============================
 # TEXT BUILDERS (SAFE)
 # ===============================
-def build_welcome_text(chat, member, joined_time):
-    # group title + link (only works well for public groups with username)
+def build_welcome_text(chat, member, joined_time: str):
     group_title = escape(chat.title or "Group")
     if getattr(chat, "username", None):
         group_link = f"https://t.me/{chat.username}"
         group_title_link = f"<a href='{group_link}'>{group_title}</a>"
     else:
-        # private group → no public link
         group_title_link = group_title
 
-    # user name mention (clickable)
     name = escape(member.first_name or "User")
     mention = f"<a href='tg://user?id={member.id}'>{name}</a>"
 
-    # username clickable (only if user has username)
     if member.username:
-        username_link = f"<a href='https://t.me/{escape(member.username)}'>@{escape(member.username)}</a>"
+        uname = escape(member.username)
+        username_link = f"<a href='https://t.me/{uname}'>@{uname}</a>"
     else:
         username_link = "No Username"
 
@@ -328,76 +325,21 @@ def build_welcome_text(chat, member, joined_time):
         f"⏰ Joined at: {escape(joined_time)}"
     )
 
-def build_goodbye_text(member, left_time):
+
+def build_goodbye_text(member, left_time: str):
     name = escape(member.first_name or "User")
     mention = f"<a href='tg://user?id={member.id}'>{name}</a>"
-
     return (
         f"⛔️ <b>ထွက်သွားပြီးပေါ့</b>\n"
         f"<b>နှစ်တစ်ထောင် Fa ဖြစ်ပါစေ။</b>\n\n"
         f"👤 Name: {mention}\n"
-        f"🆔 User ID: {member.id}\n"
-        f"⏰ Left at: {left_time}"
+        f"🆔 User ID: <code>{member.id}</code>\n"
+        f"⏰ Left at: {escape(left_time)}"
     )
 
-# ===============================
-# 👋 WELCOME MESSAGE (ON JOIN)
-# ===============================
-async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if not chat or chat.type not in ("group", "supergroup"):
-        return
-
-    if not update.message or not update.message.new_chat_members:
-        return
-
-    if not await is_bot_admin(chat.id, context):
-        return
-
-    bot = context.bot
-    me = await bot.get_me()
-
-    members = [m for m in update.message.new_chat_members if m.id != me.id]
-    if not members:
-        return
-
-    joined_time = (
-        update.message.date.strftime("%Y-%m-%d %H:%M:%S")
-        if update.message.date
-        else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    )
-
-    # 🧹 delete previous welcome
-    last_msg_id = LAST_WELCOME.get(chat.id)
-    if last_msg_id:
-        with contextlib.suppress(Exception):
-            await bot.delete_message(chat.id, last_msg_id)
-
-    for member in members:
-        text = build_welcome_text(chat, member, joined_time)
-
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                "➕ ADD ME TO YOUR GROUP",
-                url=f"https://t.me/{me.username}?startgroup=true"
-            )]
-        ])
-
-        try:
-            msg = await bot.send_photo(
-                chat_id=chat.id,
-                photo=WELCOME_IMAGE,
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=keyboard
-            )
-            LAST_WELCOME[chat.id] = msg.message_id
-        except:
-            # fallback (image fail safe)
-            await bot.send_message(chat.id, text, parse_mode="HTML")
 
 # ===============================
-# 👋 Welcome ChatMember
+# 👋 WELCOME (CHAT_MEMBER) - 100% reliable
 # ===============================
 async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -409,89 +351,115 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
     new_status = cm.new_chat_member.status
     user = cm.new_chat_member.user
 
-    # ✅ user joined (left/kicked -> member)
-    if old_status in ("left", "kicked") and new_status == "member":
-        # bot ကို welcome မလုပ်
-        me = await context.bot.get_me()
-        if user.id == me.id:
-            return
+    # bot ကို welcome မလုပ်
+    me = await context.bot.get_me()
+    if user.id == me.id:
+        return
 
-        # bot admin မဟုတ်ရင် မပို့
-        if not await is_bot_admin(chat.id, context):
-            return
+    # ✅ JOIN condition (member OR restricted)  << IMPORTANT FIX
+    joined = (old_status in ("left", "kicked")) and (new_status in ("member", "restricted"))
+    if not joined:
+        return
 
-        joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        text = build_welcome_text(chat, user, joined_time)
+    # bot admin မဟုတ်ရင် မပို့
+    if not await is_bot_admin(chat.id, context):
+        return
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                "➕ ADD ME TO YOUR GROUP",
-                url=f"https://t.me/{me.username}?startgroup=true"
-            )]
-        ])
+    # ✅ debounce duplicates (2-3 sec)  << IMPORTANT FIX
+    now_ts = int(time.time())
+    last_ts = LAST_GOODBYE.get((chat.id, user.id))  # reuse dict as a quick timestamp store
+    if last_ts and (now_ts - last_ts) < 2:
+        return
+    LAST_GOODBYE[(chat.id, user.id)] = now_ts
 
-        try:
-            msg = await context.bot.send_photo(
-                chat_id=chat.id,
-                photo=WELCOME_IMAGE,
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=keyboard
-            )
-            LAST_WELCOME[chat.id] = msg.message_id
-        except Forbidden:
-            return
-        except Exception:
-            # fallback
-            with contextlib.suppress(Exception):
-                await context.bot.send_message(chat.id, text, parse_mode="HTML")
+    joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    text = build_welcome_text(chat, user, joined_time)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "➕ ADD ME TO YOUR GROUP",
+            url=f"https://t.me/{me.username}?startgroup=true"
+        )
+    ]])
+
+    # 🧹 delete previous welcome (optional)
+    last_msg_id = LAST_WELCOME.get(chat.id)
+    if last_msg_id:
+        with contextlib.suppress(Exception):
+            await context.bot.delete_message(chat.id, last_msg_id)
+
+    try:
+        msg = await context.bot.send_photo(
+            chat_id=chat.id,
+            photo=WELCOME_IMAGE,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+        LAST_WELCOME[chat.id] = msg.message_id
+    except Forbidden:
+        return
+    except BadRequest:
+        # fallback text only
+        with contextlib.suppress(Exception):
+            await context.bot.send_message(chat.id, text, parse_mode="HTML")
+    except Exception:
+        with contextlib.suppress(Exception):
+            await context.bot.send_message(chat.id, text, parse_mode="HTML")
+
 
 # ===============================
-# 👋 GOODBYE MESSAGE (ON LEAVE)
+# 👋 GOODBYE (CHAT_MEMBER) - 100% reliable
 # ===============================
 async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    if not chat or chat.type not in ("group", "supergroup"):
+    cm = update.chat_member
+    if not chat or chat.type not in ("group", "supergroup") or not cm:
         return
 
-    member = None
-    left_date = None
+    old = cm.old_chat_member
+    new = cm.new_chat_member
+    user = old.user  # leaving user
 
-    if update.message and update.message.left_chat_member:
-        member = update.message.left_chat_member
-        left_date = update.message.date
-    elif update.chat_member and update.chat_member.old_chat_member:
-        member = update.chat_member.old_chat_member.user
-        left_date = datetime.now()
-
-    if not member:
+    # bot ကို goodbye မလုပ်
+    me = await context.bot.get_me()
+    if user.id == me.id:
         return
 
-    # 🔒 Bot already kicked → STOP IMMEDIATELY
+    # ✅ LEAVE condition
+    left = (old.status in ("member", "restricted")) and (new.status in ("left", "kicked"))
+    if not left:
+        return
+
+    # Bot kicked ဖြစ်ရင် (chat access မရှိ) silent
     try:
         await context.bot.get_chat(chat.id)
     except Forbidden:
         return
+    except Exception:
+        pass
 
     if not await is_bot_admin(chat.id, context):
         return
 
-    left_time = (
-        left_date.strftime("%Y-%m-%d %H:%M:%S")
-        if left_date else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    )
+    # ✅ debounce duplicates (2-3 sec)
+    now_ts = int(time.time())
+    last_ts = LAST_GOODBYE.get((chat.id, user.id))
+    if last_ts and (now_ts - last_ts) < 2:
+        return
+    LAST_GOODBYE[(chat.id, user.id)] = now_ts
 
-    text = build_goodbye_text(member, left_time)
+    left_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    text = build_goodbye_text(user, left_time)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "➕ ADD ME TO YOUR GROUP",
+            url=f"https://t.me/{me.username}?startgroup=true"
+        )
+    ]])
 
     try:
-        me = await context.bot.get_me()
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "➕ ADD ME TO YOUR GROUP",
-                url=f"https://t.me/{me.username}?startgroup=true"
-            )
-        ]])
-
         await context.bot.send_photo(
             chat_id=chat.id,
             photo=GOODBYE_IMAGE,
@@ -499,13 +467,14 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_markup=keyboard
         )
-
     except Forbidden:
-        # 🚫 Bot kicked → do NOTHING
         return
+    except BadRequest:
+        with contextlib.suppress(Exception):
+            await context.bot.send_message(chat.id, text, parse_mode="HTML")
     except Exception:
-        # other errors → silent
-        pass
+        with contextlib.suppress(Exception):
+            await context.bot.send_message(chat.id, text, parse_mode="HTML")
 
 # ===============================
 # 📢 BROADCAST (OWNER ONLY)
@@ -1319,21 +1288,13 @@ def main():
     # WELCOME
     # -------------------------------
     app.add_handler(
-        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome),
-        group=5
-    )
-    app.add_handler(
         ChatMemberHandler(welcome_chat_member, ChatMemberHandler.CHAT_MEMBER),
-        group=6
+        group=5
     )
 
     # -------------------------------
     # GOODBYE
     # -------------------------------
-    app.add_handler(
-        MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye),
-        group=5
-    )
     app.add_handler(
         ChatMemberHandler(goodbye, ChatMemberHandler.CHAT_MEMBER),
         group=6
