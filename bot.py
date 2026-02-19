@@ -44,6 +44,9 @@ DB_USER = os.getenv("SUPABASE_USER")
 DB_PASS = os.getenv("SUPABASE_PASSWORD")
 DB_PORT = int(os.getenv("SUPABASE_PORT", "6543"))
 
+# DB runtime flag (avoid crashing when DB is down / not configured)
+DB_READY = False
+
 # ===============================
 # GLOBAL CACHES
 # ===============================
@@ -64,10 +67,14 @@ USER_ADMIN_CACHE: dict[int, set[int]] = {}
 REMINDER_MESSAGES: dict[int, list[int]] = {}
 PENDING_BROADCAST = {}
 BOT_START_TIME = int(time.time())
+
 LAST_WELCOME = {}   # {chat_id: message_id}
 LAST_GOODBYE = {}   # {(chat_id, user_id): timestamp}
 LAST_WELCOME_TS = {}   # {(chat_id, user_id): ts}
 LAST_GOODBYE_TS = {}   # {(chat_id, user_id): ts}
+
+FALLBACK_EVENT_TS = {}  # {(chat_id, user_id, "join"/"left"): ts}
+FALLBACK_DEBOUNCE_SECONDS = 3
 
 LOG_RATE_CACHE = {}
 LOG_RATE_SECONDS = 60
@@ -99,6 +106,9 @@ async def db_execute(query, params=None, fetch=False):
 
 # ✅ prevent "Task exception was never retrieved" when DB is down
 async def safe_db_execute(query, params=None, fetch=False):
+    # If DB is not ready, don't even try (avoid log spam + overhead)
+    if pool is None or not DB_READY:
+        return None
     try:
         return await db_execute(query, params=params, fetch=fetch)
     except Exception as e:
@@ -110,6 +120,9 @@ async def safe_db_execute(query, params=None, fetch=False):
 # INIT DB
 # ===============================
 async def init_db():
+    if pool is None:
+        return
+    
     await db_execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY
@@ -123,6 +136,10 @@ async def init_db():
             last_checked_at BIGINT
         )
     """)
+    
+    # safety for existing DB (if table already created) - don't crash on DB quirks
+    await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS fail_count INT DEFAULT 0")
+    await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS last_fail_at BIGINT") 
 
 async def is_group_admin_cached_db(chat_id: int) -> bool:
     rows = await safe_db_execute(
@@ -194,11 +211,28 @@ async def is_bot_admin(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool
         return True
     try:
         me = await context.bot.get_chat_member(chat_id, context.bot.id)
-        if me.status in ("administrator", "creator"):
+        if me.status in ("administrator", "creator") and getattr(me, "can_delete_messages", False):
             BOT_ADMIN_CACHE.add(chat_id)
             return True
         return False
     except:
+        return False
+
+async def can_bot_send(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Welcome/Goodbye အတွက် — Bot က message ပို့လို့ရမရ စစ်တာ
+    Admin မဟုတ်လည်း can_send_messages ရရင် ပို့နိုင်တယ် (restricted cases)
+    """
+    try:
+        me = await context.bot.get_chat_member(chat_id, context.bot.id)
+        # If restricted/member and cannot send -> False
+        if me.status in ("restricted", "member") and not getattr(me, "can_send_messages", True):
+            return False
+        # left/kicked -> no access
+        if me.status in ("left", "kicked"):
+            return False
+        return True
+    except Exception:
         return False
 
 async def ensure_bot_admin_live(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -334,7 +368,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # save user
         context.application.create_task(
-            db_execute(
+            safe_db_execute(
                 "INSERT INTO users VALUES (%s) ON CONFLICT DO NOTHING",
                 (user.id,)
             )
@@ -729,16 +763,8 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not joined:
         return
 
-    # bot admin မဟုတ်ရင် မပို့
-    if not await is_bot_admin(chat.id, context):
-        return
-
-    # ✅ Optional Safety Check: bot can send messages? (avoid BadRequest/Forbidden spam)
-    try:
-        bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
-        if bot_member.status in ("restricted", "member") and not getattr(bot_member, "can_send_messages", True):
-            return
-    except Exception:
+    # ✅ Welcome အတွက် send permission ရရင်ပို့ (delete permission မလို)
+    if not await can_bot_send(chat.id, context):
         return
 
     # ✅ debounce duplicates (2-3 sec)  << IMPORTANT FIX
@@ -747,6 +773,8 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
     if last_ts and (now_ts - last_ts) < 3:
         return
     LAST_WELCOME_TS[(chat.id, user.id)] = now_ts
+    # ✅ cross-debounce: stop fallback handler from sending again
+    FALLBACK_EVENT_TS[(chat.id, user.id, "join")] = now_ts
 
     joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = build_welcome_text(chat, user, joined_time)
@@ -767,6 +795,16 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=keyboard
         )
         LAST_WELCOME[chat.id] = msg.message_id
+    except RetryAfter as e:
+        await asyncio.sleep(getattr(e, "retry_after", 1))
+        with contextlib.suppress(Exception):
+            msg = await context.bot.send_photo(
+                chat_id=chat.id,
+                photo=WELCOME_IMAGE,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
     except Forbidden:
         return
     except BadRequest:
@@ -819,15 +857,8 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    if not await is_bot_admin(chat.id, context):
-        return
-    
-    # ✅ Optional Safety Check: bot can send messages? (avoid BadRequest/Forbidden spam)
-    try:
-        bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
-        if bot_member.status in ("restricted", "member") and not getattr(bot_member, "can_send_messages", True):
-            return
-    except Exception:
+    # ✅ Goodbye အတွက် send permission ရရင်ပို့ (delete permission မလို)
+    if not await can_bot_send(chat.id, context):
         return
 
     # ✅ debounce duplicates (2-3 sec)
@@ -836,6 +867,8 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if last_ts and (now_ts - last_ts) < 3:
         return
     LAST_GOODBYE_TS[(chat.id, user.id)] = now_ts
+    # ✅ cross-debounce: stop fallback handler from sending again
+    FALLBACK_EVENT_TS[(chat.id, user.id, "left")] = now_ts
 
     left_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = build_goodbye_text(user, left_time)
@@ -855,6 +888,16 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
             reply_markup=keyboard
         )
+    except RetryAfter as e:
+        await asyncio.sleep(getattr(e, "retry_after", 1))
+        with contextlib.suppress(Exception):
+            await context.bot.send_photo(
+                chat_id=chat.id,
+                photo=GOODBYE_IMAGE,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
     except Forbidden:
         return
     except BadRequest:
@@ -863,6 +906,132 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         with contextlib.suppress(Exception):
             await context.bot.send_message(chat.id, text, parse_mode="HTML")
+
+# ===============================
+# Fallback Debounce
+# ===============================
+def _fallback_debounce(chat_id: int, user_id: int, kind: str) -> bool:
+    now_ts = int(time.time())
+    key = (chat_id, user_id, kind)
+    last = FALLBACK_EVENT_TS.get(key, 0)
+    if last and (now_ts - last) < FALLBACK_DEBOUNCE_SECONDS:
+        return True
+    FALLBACK_EVENT_TS[key] = now_ts
+    return False
+
+async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Fallback signals:
+    - message.new_chat_members (join)
+    - message.left_chat_member (leave)
+    ChatMemberHandler မလာတဲ့ group တွေအတွက် helper only.
+    """
+    chat = update.effective_chat
+    msg = update.effective_message
+    if not chat or chat.type not in ("group", "supergroup") or not msg:
+        return
+    # fallback လည်း send permission ရရင်ပို့ (welcome/goodbye only)
+    if not await can_bot_send(chat.id, context):
+        return
+
+    bot_me = await context.bot.get_me()
+
+    # JOIN
+    new_members = getattr(msg, "new_chat_members", None) or []
+    for m in new_members:
+        if m.id == bot_me.id:
+            continue
+        # ✅ if main handler already processed, skip
+        if LAST_WELCOME_TS.get((chat.id, m.id)) and (int(time.time()) - LAST_WELCOME_TS[(chat.id, m.id)] < 3):
+            continue
+        if _fallback_debounce(chat.id, m.id, "join"):
+            continue
+        joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        text = build_welcome_text(chat, m, joined_time)
+        with contextlib.suppress(Exception):
+            await context.bot.send_photo(
+                chat_id=chat.id,
+                photo=WELCOME_IMAGE,
+                caption=text,
+                parse_mode="HTML"
+            )
+
+    # LEAVE
+    left_member = getattr(msg, "left_chat_member", None)
+    if left_member and left_member.id != bot_me.id:
+        if LAST_GOODBYE_TS.get((chat.id, left_member.id)) and (int(time.time()) - LAST_GOODBYE_TS[(chat.id, left_member.id)] < 3):
+            return
+        if not _fallback_debounce(chat.id, left_member.id, "left"):
+            left_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            text = build_goodbye_text(left_member, left_time)
+            with contextlib.suppress(Exception):
+                await context.bot.send_photo(
+                    chat_id=chat.id,
+                    photo=GOODBYE_IMAGE,
+                    caption=text,
+                    parse_mode="HTML"
+                )
+
+# ===============================
+# BROADCAST FAIL TRACKING (NON-ADMIN CLEANUP)
+# ===============================
+async def record_broadcast_result(chat_id: int, success: bool):
+    rows = await safe_db_execute(
+        "SELECT is_admin_cached, fail_count FROM groups WHERE group_id=%s",
+        (chat_id,),
+        fetch=True
+    )
+    now = int(time.time())
+
+    # ✅ If group row doesn't exist, create it (align admin flag with RAM cache)
+    if not rows:
+        if success:
+            is_admin = (chat_id in BOT_ADMIN_CACHE)
+            await safe_db_execute(
+                """
+                INSERT INTO groups (group_id, is_admin_cached, last_checked_at, fail_count, last_fail_at)
+                VALUES (%s, %s, %s, 0, NULL)
+                ON CONFLICT (group_id)
+                DO UPDATE SET last_checked_at = EXCLUDED.last_checked_at
+                """,
+                (chat_id, is_admin, now)
+            )
+            return
+        # fail: start fail_count at 1
+        await safe_db_execute(
+            """
+            INSERT INTO groups (group_id, is_admin_cached, last_checked_at, fail_count, last_fail_at)
+            VALUES (%s, FALSE, %s, 1, %s)
+            ON CONFLICT (group_id)
+            DO UPDATE SET
+              last_checked_at = EXCLUDED.last_checked_at,
+              fail_count = COALESCE(groups.fail_count, 0) + 1,
+              last_fail_at = EXCLUDED.last_fail_at
+            """,
+            (chat_id, now, now)
+        )
+        return
+
+    is_admin = bool(rows[0].get("is_admin_cached"))
+    fails = int(rows[0].get("fail_count") or 0)
+
+    if success:
+        await safe_db_execute(
+            "UPDATE groups SET fail_count=0, last_fail_at=NULL WHERE group_id=%s",
+            (chat_id,)
+        )
+        return
+
+    # only count fails for non-admin groups
+    if not is_admin:
+        fails += 1
+        if fails >= 10:
+            await safe_db_execute("DELETE FROM groups WHERE group_id=%s", (chat_id,))
+            return
+        await safe_db_execute(
+            "UPDATE groups SET fail_count=%s, last_fail_at=%s WHERE group_id=%s",
+            (fails, now, chat_id)
+        )
 
 # ===============================
 # BROADCAST SYSTEM
@@ -962,7 +1131,18 @@ async def safe_send(func, *args, **kwargs):
                 ctx = args[0]
                 old_chat_id = args[1]
                 new_chat_id = e.new_chat_id
-                
+
+                # -------- RAM migrate (important for consistency) --------
+                if old_chat_id in BOT_ADMIN_CACHE:
+                    BOT_ADMIN_CACHE.discard(old_chat_id)
+                    BOT_ADMIN_CACHE.add(new_chat_id)
+                USER_ADMIN_CACHE[new_chat_id] = USER_ADMIN_CACHE.pop(old_chat_id, set())
+                REMINDER_MESSAGES[new_chat_id] = REMINDER_MESSAGES.pop(old_chat_id, [])
+
+                # admin verify throttle: allow fresh checks on new id
+                ADMIN_VERIFY_CACHE.pop(old_chat_id, None)
+                ADMIN_VERIFY_CACHE.pop(new_chat_id, None)
+
                 try:
                     me = await ctx.bot.get_chat_member(new_chat_id, ctx.bot.id)   
                     is_admin = me.status in ("administrator", "creator") and getattr(me, "can_delete_messages", False)
@@ -985,6 +1165,7 @@ async def safe_send(func, *args, **kwargs):
                 ctx.application.create_task(
                     safe_db_execute("DELETE FROM groups WHERE group_id=%s", (old_chat_id,))
                 )
+                
                 new_args = (args[0], new_chat_id, *args[2:])
                 args = new_args
                 continue
@@ -999,6 +1180,12 @@ async def safe_send(func, *args, **kwargs):
 async def broadcast_target_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    # If DB is unavailable, broadcasting to saved users/groups cannot work
+    if not DB_READY or pool is None:
+        PENDING_BROADCAST.pop(OWNER_ID, None)
+        await query.edit_message_text("⚠️ DB unavailable — Broadcast မလုပ်နိုင်ပါ (DB down)")
+        return
 
     data = PENDING_BROADCAST.pop(OWNER_ID, None)
     if not data:
@@ -1020,31 +1207,48 @@ async def broadcast_target_handler(update: Update, context: ContextTypes.DEFAULT
         rows = await safe_db_execute("SELECT COUNT(*) AS c FROM users", fetch=True)
         total += int(rows[0]["c"]) if rows else 0
     if target_type in ("bc_target_groups", "bc_target_all"):
-        rows = await safe_db_execute(
-            "SELECT COUNT(*) AS c FROM groups WHERE is_admin_cached = TRUE",
-            fetch=True
-        )
+        # ✅ include non-admin groups too
+        rows = await safe_db_execute("SELECT COUNT(*) AS c FROM groups", fetch=True)
         total += int(rows[0]["c"]) if rows else 0
 
-    async def send_batch(ids):
+    async def send_batch(ids, is_group: bool):
         nonlocal sent, attempted
         for cid in ids:
+            if is_group:
+                # Ensure group row exists (so fail_count tracking always works)
+                context.application.create_task(
+                    safe_db_execute(
+                        """
+                        INSERT INTO groups (group_id, is_admin_cached, last_checked_at, fail_count, last_fail_at)
+                        VALUES (%s, %s, %s, 0, NULL)
+                        ON CONFLICT (group_id) DO NOTHING
+                        """,
+                        (cid, cid in BOT_ADMIN_CACHE, int(time.time()))
+                    )
+                )
             res = await safe_send(send_content, context, cid, data)
             attempted += 1
             if res:
                 sent += 1
+                if is_group:
+                    context.application.create_task(record_broadcast_result(cid, True))
+            else:
+                if is_group:           
+                    context.application.create_task(record_broadcast_result(cid, False)) 
+            
             if attempted % 50 == 0 or attempted == total:
                 await update_progress(progress_msg, attempted, total)
 
     if target_type in ("bc_target_users", "bc_target_all"):
         async for rows in iter_db_ids("SELECT user_id FROM users ORDER BY user_id"):
-            await send_batch([r["user_id"] for r in rows])
+            await send_batch([r["user_id"] for r in rows], is_group=False)
 
     if target_type in ("bc_target_groups", "bc_target_all"):
         async for rows in iter_db_ids(
-            "SELECT group_id FROM groups WHERE is_admin_cached = TRUE ORDER BY group_id"
+            # ✅ include non-admin groups too
+            "SELECT group_id FROM groups ORDER BY group_id"
         ):
-            await send_batch([r["group_id"] for r in rows])
+            await send_batch([r["group_id"] for r in rows], is_group=True)
 
     elapsed = int(time.time() - start_time)
     await progress_msg.edit_text(
@@ -1117,8 +1321,6 @@ async def send_content(context, chat_id, data):
                     message_id=message_id
                 )
         
-        except ChatMigrated:
-             raise
         except (Forbidden, BadRequest):
             return None
         except Exception:
@@ -1161,8 +1363,6 @@ async def send_content(context, chat_id, data):
                 text=text,
                 parse_mode="HTML"
             )
-    except ChatMigrated:
-        raise
     except (Forbidden, BadRequest):
         return None
     except Exception:
@@ -1608,6 +1808,17 @@ def main():
     )
     
     # -------------------------------
+    # Fallback join/leave (message-based)
+    # -------------------------------
+    app.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER,
+            fallback_join_leave
+        ),
+        group=7
+    )
+    
+    # -------------------------------
     # Broadcast
     # -------------------------------
     app.add_handler(
@@ -1616,25 +1827,16 @@ def main():
             broadcast
         )
     )
-
-    app.add_handler(CallbackQueryHandler(
-        broadcast_confirm_handler,
-        pattern="broadcast_confirm"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        broadcast_target_handler,
-        pattern="^bc_target_"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        broadcast_cancel_handler,
-        pattern="broadcast_cancel"
-    ))
+    app.add_handler(CallbackQueryHandler(broadcast_confirm_handler, pattern="broadcast_confirm"))
+    app.add_handler(CallbackQueryHandler(broadcast_target_handler, pattern="^bc_target_"))
+    app.add_handler(CallbackQueryHandler(broadcast_cancel_handler, pattern="broadcast_cancel"))
 
     # -------------------------------
     # STARTUP HOOK (CORRECT)
     # -------------------------------
     async def on_startup(app):
         global pool
+        global DB_READY
         print("🟡 Starting bot...", flush=True)
 
         await app.bot.delete_webhook(drop_pending_updates=True)
@@ -1655,17 +1857,22 @@ def main():
                 kwargs={"prepare_threshold": None}
             )
             print("✅ DB pool created", flush=True)
+            DB_READY = True
         except Exception as e:
             print("❌ DB pool creation failed:", e, flush=True)
-            raise
+            # Production: keep bot alive even if DB is down
+            pool = None
+            DB_READY = False
+            print("⚠️ DB disabled, bot will run without DB features", flush=True)
+            return
 
         await init_db()
         print("✅ DB init done", flush=True)
 
-        now = await refresh_admin_cache(app)
-        print("✅ Admin cache refreshed", flush=True)
-        
-        await purge_non_admin_groups_verified(now)
+        if DB_READY:
+            now = await refresh_admin_cache(app)
+            print("✅ Admin cache refreshed", flush=True)
+            await purge_non_admin_groups_verified(now)
 
         print("🤖 MissOlivia Bot running (PRODUCTION READY)", flush=True)
 
