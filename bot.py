@@ -770,7 +770,7 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
     # ✅ debounce duplicates (2-3 sec)  << IMPORTANT FIX
     now_ts = int(time.time())
     last_ts = LAST_WELCOME_TS.get((chat.id, user.id))
-    if last_ts and (now_ts - last_ts) < 3:
+    if last_ts and (now_ts - last_ts) < 5:
         return
     LAST_WELCOME_TS[(chat.id, user.id)] = now_ts
     # ✅ cross-debounce: stop fallback handler from sending again
@@ -795,6 +795,7 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup=keyboard
         )
         LAST_WELCOME[chat.id] = msg.message_id
+        LAST_WELCOME_TS[(chat.id, user.id)] = int(time.time())
     except RetryAfter as e:
         await asyncio.sleep(getattr(e, "retry_after", 1))
         with contextlib.suppress(Exception):
@@ -864,7 +865,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ✅ debounce duplicates (2-3 sec)
     now_ts = int(time.time())
     last_ts = LAST_GOODBYE_TS.get((chat.id, user.id))
-    if last_ts and (now_ts - last_ts) < 3:
+    if last_ts and (now_ts - last_ts) < 5:
         return
     LAST_GOODBYE_TS[(chat.id, user.id)] = now_ts
     # ✅ cross-debounce: stop fallback handler from sending again
@@ -942,9 +943,8 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
         if m.id == bot_me.id:
             continue
         # ✅ if main handler already processed, skip
-        if LAST_WELCOME_TS.get((chat.id, m.id)) and (int(time.time()) - LAST_WELCOME_TS[(chat.id, m.id)] < 3):
-            continue
-        if _fallback_debounce(chat.id, m.id, "join"):
+        last_main = LAST_WELCOME_TS.get((chat.id, m.id))
+        if last_main and (int(time.time()) - last_main < 5):
             continue
         joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         text = build_welcome_text(chat, m, joined_time)
@@ -959,7 +959,8 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
     # LEAVE
     left_member = getattr(msg, "left_chat_member", None)
     if left_member and left_member.id != bot_me.id:
-        if LAST_GOODBYE_TS.get((chat.id, left_member.id)) and (int(time.time()) - LAST_GOODBYE_TS[(chat.id, left_member.id)] < 3):
+        last_main = LAST_GOODBYE_TS.get((chat.id, left_member.id))
+        if last_main and (int(time.time()) - last_main < 5):
             return
         if not _fallback_debounce(chat.id, left_member.id, "left"):
             left_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1796,7 +1797,7 @@ def main():
     # -------------------------------
     app.add_handler(
         ChatMemberHandler(welcome_chat_member, ChatMemberHandler.CHAT_MEMBER),
-        group=5
+        group=1
     )
 
     # -------------------------------
@@ -1804,7 +1805,7 @@ def main():
     # -------------------------------
     app.add_handler(
         ChatMemberHandler(goodbye, ChatMemberHandler.CHAT_MEMBER),
-        group=6
+        group=2
     )
     
     # -------------------------------
@@ -1815,7 +1816,7 @@ def main():
             filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER,
             fallback_join_leave
         ),
-        group=7
+        group=10
     )
     
     # -------------------------------
