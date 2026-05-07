@@ -942,6 +942,11 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
     for m in new_members:
         if m.id == bot_me.id:
             continue
+        
+        # ✅ fallback debounce
+        if _fallback_debounce(chat.id, m.id, "join"):
+            continue    
+        
         # ✅ if main handler already processed, skip
         last_main = LAST_WELCOME_TS.get((chat.id, m.id))
         if last_main and (int(time.time()) - last_main < 5):
