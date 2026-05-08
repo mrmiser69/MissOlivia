@@ -38,6 +38,31 @@ START_IMAGE = "https://i.postimg.cc/tJF69SbN/ICON.jpg"
 WELCOME_IMAGE = "https://i.postimg.cc/L6hVSnp3/WELCOME.png"
 GOODBYE_IMAGE = "https://i.postimg.cc/bdXNCLc2/Untitled-design-(12).png"
 
+# ===============================
+# PHOTO PACKS
+# ===============================
+WELCOME_PHOTO_PACKS = {
+    "oggy": [
+        "https://example.com/oggy1.jpg",
+        "https://example.com/oggy2.jpg",
+    ],
+    "olivia": [
+        "https://example.com/olivia1.jpg",
+        "https://example.com/olivia2.jpg",
+    ]
+}
+
+GOODBYE_PHOTO_PACKS = {
+    "oggy": [
+        "https://example.com/oggy_goodbye1.jpg",
+        "https://example.com/oggy_goodbye2.jpg",
+    ],
+    "olivia": [
+        "https://example.com/olivia_goodbye1.jpg",
+        "https://example.com/olivia_goodbye2.jpg",
+    ]
+}
+
 DB_HOST = os.getenv("SUPABASE_HOST")
 DB_NAME = os.getenv("SUPABASE_DB")
 DB_USER = os.getenv("SUPABASE_USER")
@@ -140,6 +165,13 @@ async def init_db():
     # safety for existing DB (if table already created) - don't crash on DB quirks
     await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS fail_count INT DEFAULT 0")
     await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS last_fail_at BIGINT") 
+
+    await safe_db_execute(
+        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS custom_welcome_photo TEXT"
+    )
+    await safe_db_execute(
+        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS custom_goodbye_photo TEXT"
+    )
 
 async def is_group_admin_cached_db(chat_id: int) -> bool:
     rows = await safe_db_execute(
