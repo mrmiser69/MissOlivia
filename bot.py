@@ -91,6 +91,7 @@ BOT_ADMIN_CACHE: set[int] = set()
 USER_ADMIN_CACHE: dict[int, set[int]] = {}
 REMINDER_MESSAGES: dict[int, list[int]] = {}
 PENDING_BROADCAST = {}
+PHOTO_PACK_SELECTION = {}
 BOT_START_TIME = int(time.time())
 
 LAST_WELCOME = {}   # {chat_id: message_id}
@@ -717,6 +718,98 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ===============================
+# PHOTO PACK HELPERS
+# ===============================
+async def get_group_photo_pack(chat_id: int):
+    rows = await safe_db_execute(
+        """
+        SELECT custom_welcome_photo, custom_goodbye_photo
+        FROM groups
+        WHERE group_id=%s
+        """,
+        (chat_id,),
+        fetch=True
+    )
+
+    if not rows:
+        return None, None
+
+    return (
+        rows[0].get("custom_welcome_photo"),
+        rows[0].get("custom_goodbye_photo")
+    )
+
+
+async def set_group_photo_pack(
+    chat_id: int,
+    welcome_pack: str,
+    goodbye_pack: str
+):
+    await safe_db_execute(
+        """
+        INSERT INTO groups (
+            group_id,
+            custom_welcome_photo,
+            custom_goodbye_photo
+        )
+        VALUES (%s, %s, %s)
+        ON CONFLICT (group_id)
+        DO UPDATE SET
+            custom_welcome_photo = EXCLUDED.custom_welcome_photo,
+            custom_goodbye_photo = EXCLUDED.custom_goodbye_photo
+        """,
+        (
+            chat_id,
+            welcome_pack,
+            goodbye_pack
+        )
+    )
+
+
+def get_random_pack_photo(pack_dict: dict, pack_name: str):
+    import random
+
+    photos = pack_dict.get(pack_name)
+
+    if not photos:
+        return None
+
+    return random.choice(photos)
+
+async def get_user_admin_groups(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    groups = []
+
+    rows = await safe_db_execute(
+        """
+        SELECT group_id
+        FROM groups
+        ORDER BY group_id
+        """,
+        fetch=True
+    ) or []
+
+    for row in rows:
+        gid = row["group_id"]
+
+        try:
+            member = await context.bot.get_chat_member(gid, user_id)
+
+            if member.status not in ("administrator", "creator"):
+                continue
+
+            chat = await context.bot.get_chat(gid)
+
+            groups.append({
+                "id": gid,
+                "title": chat.title or str(gid)
+            })
+
+        except Exception:
+            continue
+
+    return groups
+
+# ===============================
 # TEXT BUILDERS (SAFE)
 # ===============================
 def build_welcome_text(chat, member, joined_time: str):
@@ -756,6 +849,52 @@ def build_goodbye_text(member, left_time: str):
         f"⏰ Left at: {escape(left_time)}"
     )
 
+async def get_group_welcome_photo(chat_id: int):
+    rows = await safe_db_execute(
+        """
+        SELECT welcome_photo_pack
+        FROM groups
+        WHERE group_id=%s
+        """,
+        (chat_id,),
+        fetch=True
+    )
+
+    if rows:
+        pack = rows[0].get("welcome_photo_pack")
+
+        if pack and pack in WELCOME_PHOTO_PACKS:
+            photos = WELCOME_PHOTO_PACKS[pack]
+
+            if photos:
+                import random
+                return random.choice(photos)
+
+    return WELCOME_IMAGE
+
+
+async def get_group_goodbye_photo(chat_id: int):
+    rows = await safe_db_execute(
+        """
+        SELECT goodbye_photo_pack
+        FROM groups
+        WHERE group_id=%s
+        """,
+        (chat_id,),
+        fetch=True
+    )
+
+    if rows:
+        pack = rows[0].get("goodbye_photo_pack")
+
+        if pack and pack in GOODBYE_PHOTO_PACKS:
+            photos = GOODBYE_PHOTO_PACKS[pack]
+
+            if photos:
+                import random
+                return random.choice(photos)
+
+    return GOODBYE_IMAGE
 
 # ===============================
 # 👋 WELCOME (CHAT_MEMBER) - 100% reliable
@@ -821,7 +960,7 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         msg = await context.bot.send_photo(
             chat_id=chat.id,
-            photo=WELCOME_IMAGE,
+            photo=await get_group_welcome_photo(chat.id),
             caption=text,
             parse_mode="HTML",
             reply_markup=keyboard
@@ -833,7 +972,7 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
         with contextlib.suppress(Exception):
             msg = await context.bot.send_photo(
                 chat_id=chat.id,
-                photo=WELCOME_IMAGE,
+                photo=await get_group_welcome_photo(chat.id),
                 caption=text,
                 parse_mode="HTML",
                 reply_markup=keyboard
@@ -916,7 +1055,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_photo(
             chat_id=chat.id,
-            photo=GOODBYE_IMAGE,
+            photo=await get_group_goodbye_photo(chat.id),
             caption=text,
             parse_mode="HTML",
             reply_markup=keyboard
@@ -926,7 +1065,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with contextlib.suppress(Exception):
             await context.bot.send_photo(
                 chat_id=chat.id,
-                photo=GOODBYE_IMAGE,
+                photo=await get_group_goodbye_photo(chat.id),
                 caption=text,
                 parse_mode="HTML",
                 reply_markup=keyboard
@@ -988,7 +1127,7 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
         with contextlib.suppress(Exception):
             await context.bot.send_photo(
                 chat_id=chat.id,
-                photo=WELCOME_IMAGE,
+                photo=await get_group_welcome_photo(chat.id),
                 caption=text,
                 parse_mode="HTML"
             )
@@ -1005,7 +1144,7 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
             with contextlib.suppress(Exception):
                 await context.bot.send_photo(
                     chat_id=chat.id,
-                    photo=GOODBYE_IMAGE,
+                    photo=await get_group_goodbye_photo(chat.id),
                     caption=text,
                     parse_mode="HTML"
                 )
@@ -1598,6 +1737,286 @@ async def admin_reminder(context: ContextTypes.DEFAULT_TYPE):
         REMINDER_MESSAGES.pop(chat_id, None)
 
 # ===============================
+# PHOTO PACK MENU
+# ===============================
+async def packs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.effective_message
+
+    if not chat or not user or not msg:
+        return
+
+    if chat.type != "private":
+        return
+
+    groups = await get_user_admin_groups(user.id, context)
+
+    if not groups:
+        await msg.reply_text(
+            "❌ Admin / Owner ဖြစ်တဲ့ Group မတွေ့ပါ"
+        )
+        return
+
+    buttons = []
+
+    for g in groups:
+        buttons.append([
+            InlineKeyboardButton(
+                g["title"][:50],
+                callback_data=f"pack_group_{g['id']}"
+            )
+        ])
+
+    await msg.reply_text(
+        "🎨 Welcome / Goodbye Photo Pack သတ်မှတ်မယ့် Group ကိုရွေးပါ။",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def pack_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+
+    if not query or not query.data:
+        return
+
+    await query.answer()
+
+    user = update.effective_user
+
+    try:
+        chat_id = int(query.data.split("_")[-1])
+    except:
+        return
+
+    # security check
+    try:
+        member = await context.bot.get_chat_member(chat_id, user.id)
+
+        if member.status not in ("administrator", "creator"):
+            await query.answer(
+                "❌ You are not admin",
+                show_alert=True
+            )
+            return
+
+    except Exception:
+        return
+
+    buttons = []
+
+    for pack_name in WELCOME_PHOTO_PACKS.keys():
+        buttons.append([
+            InlineKeyboardButton(
+                f"🎨 {pack_name.upper()}",
+                callback_data=f"setpack_{chat_id}_{pack_name}"
+            )
+        ])
+
+    await query.edit_message_text(
+        "🖼 Welcome / Goodbye Photo Pack ကိုရွေးပါ။",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def set_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+
+    if not query or not query.data:
+        return
+
+    await query.answer()
+
+    user = update.effective_user
+
+    try:
+        _, chat_id, pack_name = query.data.split("_", 2)
+        chat_id = int(chat_id)
+    except:
+        return
+
+    # security check
+    try:
+        member = await context.bot.get_chat_member(chat_id, user.id)
+
+        if member.status not in ("administrator", "creator"):
+            await query.answer(
+                "❌ You are not admin",
+                show_alert=True
+            )
+            return
+
+    except Exception:
+        return
+
+    # invalid pack
+    if pack_name not in WELCOME_PHOTO_PACKS:
+        return
+
+    await set_group_photo_pack(
+        chat_id,
+        welcome_pack=pack_name,
+        goodbye_pack=pack_name
+    )
+
+    await query.edit_message_text(
+        f"✅ Photo Pack set completed.\n\n"
+        f"🏷 Pack: {pack_name.upper()}\n"
+        f"🆔 Group ID: <code>{chat_id}</code>",
+        parse_mode="HTML"
+    )
+
+async def set_welcome_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.effective_message
+
+    if not chat or chat.type not in ("group", "supergroup"):
+        return
+
+    if not user or not await is_user_admin(chat.id, user.id, context):
+        return
+
+    buttons = []
+
+    for pack_name in WELCOME_PHOTO_PACKS.keys():
+        buttons.append([
+            InlineKeyboardButton(
+                f"📸 {pack_name.title()}",
+                callback_data=f"set_welcome_pack:{chat.id}:{pack_name}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "♻️ Default",
+            callback_data=f"set_welcome_pack:{chat.id}:default"
+        )
+    ])
+
+    await msg.reply_text(
+        "🖼 <b>Choose Welcome Photo Pack</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def set_goodbye_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.effective_message
+
+    if not chat or chat.type not in ("group", "supergroup"):
+        return
+
+    if not user or not await is_user_admin(chat.id, user.id, context):
+        return
+
+    buttons = []
+
+    for pack_name in GOODBYE_PHOTO_PACKS.keys():
+        buttons.append([
+            InlineKeyboardButton(
+                f"📸 {pack_name.title()}",
+                callback_data=f"set_goodbye_pack:{chat.id}:{pack_name}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            "♻️ Default",
+            callback_data=f"set_goodbye_pack:{chat.id}:default"
+        )
+    ])
+
+    await msg.reply_text(
+        "🖼 <b>Choose Goodbye Photo Pack</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+async def photo_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+
+    if not query or not query.data:
+        return
+
+    user = update.effective_user
+
+    await query.answer()
+
+    data = query.data
+
+    try:
+        action, chat_id, pack_name = data.split(":")
+        chat_id = int(chat_id)
+    except:
+        return
+
+    if not user or not await is_user_admin(chat_id, user.id, context):
+        await query.answer("❌ You are not admin", show_alert=True)
+        return
+
+    if action == "set_welcome_pack":
+
+        if pack_name == "default":
+            await safe_db_execute(
+                """
+                UPDATE groups
+                SET welcome_photo_pack=NULL
+                WHERE group_id=%s
+                """,
+                (chat_id,)
+            )
+
+            await query.edit_message_text(
+                "♻️ Welcome photo reset to default"
+            )
+            return
+
+        await safe_db_execute(
+            """
+            UPDATE groups
+            SET welcome_photo_pack=%s
+            WHERE group_id=%s
+            """,
+            (pack_name, chat_id)
+        )
+
+        await query.edit_message_text(
+            f"✅ Welcome pack set to: {pack_name}"
+        )
+        return
+
+    if action == "set_goodbye_pack":
+
+        if pack_name == "default":
+            await safe_db_execute(
+                """
+                UPDATE groups
+                SET goodbye_photo_pack=NULL
+                WHERE group_id=%s
+                """,
+                (chat_id,)
+            )
+
+            await query.edit_message_text(
+                "♻️ Goodbye photo reset to default"
+            )
+            return
+
+        await safe_db_execute(
+            """
+            UPDATE groups
+            SET goodbye_photo_pack=%s
+            WHERE group_id=%s
+            """,
+            (pack_name, chat_id)
+        )
+
+        await query.edit_message_text(
+            f"✅ Goodbye pack set to: {pack_name}"
+        )
+
+# ===============================
 # GROUP COMMANDS
 # ===============================
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1818,7 +2237,12 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("refresh", refresh))
     app.add_handler(CommandHandler("refresh_all", refresh_all))
+    app.add_handler(CommandHandler("setwelcomephoto", set_welcome_photo))
+    app.add_handler(CommandHandler("setgoodbyephoto", set_goodbye_photo))    
+    app.add_handler(CommandHandler("packs", packs_command))
     app.add_handler(CallbackQueryHandler(donate_callback, pattern=r"^donate"))
+    app.add_handler(CallbackQueryHandler(pack_group_callback, pattern=r"^pack_group_"))
+    app.add_handler(CallbackQueryHandler(set_pack_callback, pattern=r"^setpack_"))
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
@@ -1868,6 +2292,13 @@ def main():
     app.add_handler(CallbackQueryHandler(broadcast_confirm_handler, pattern="broadcast_confirm"))
     app.add_handler(CallbackQueryHandler(broadcast_target_handler, pattern="^bc_target_"))
     app.add_handler(CallbackQueryHandler(broadcast_cancel_handler, pattern="broadcast_cancel"))
+
+    app.add_handler(
+        CallbackQueryHandler(
+            photo_pack_callback,
+            pattern="^(set_welcome_pack|set_goodbye_pack):"
+        )
+    )
 
     # -------------------------------
     # STARTUP HOOK (CORRECT)
