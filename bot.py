@@ -14,6 +14,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ChatPermissions,
+    InputMediaPhoto,
 )
 from telegram.error import RetryAfter, Forbidden, BadRequest, ChatMigrated
 from telegram.ext import (
@@ -63,6 +64,32 @@ GOODBYE_PHOTO_PACKS = {
     ]
 }
 
+# ===============================
+# PHOTO PREVIEW PACKS
+# ===============================
+
+WELCOME_PREVIEW_PACKS = {
+    "oggy": [
+        "PASTE_WELCOME_OGGY_PHOTO_1",
+        "PASTE_WELCOME_OGGY_PHOTO_2",
+    ],
+    "olivia": [
+        "PASTE_WELCOME_OLIVIA_PHOTO_1",
+        "PASTE_WELCOME_OLIVIA_PHOTO_2",
+    ]
+}
+
+GOODBYE_PREVIEW_PACKS = {
+    "oggy": [
+        "PASTE_GOODBYE_OGGY_PHOTO_1",
+        "PASTE_GOODBYE_OGGY_PHOTO_2",
+    ],
+    "olivia": [
+        "PASTE_GOODBYE_OLIVIA_PHOTO_1",
+        "PASTE_GOODBYE_OLIVIA_PHOTO_2",
+    ]
+}
+
 DB_HOST = os.getenv("SUPABASE_HOST")
 DB_NAME = os.getenv("SUPABASE_DB")
 DB_USER = os.getenv("SUPABASE_USER")
@@ -92,6 +119,7 @@ USER_ADMIN_CACHE: dict[int, set[int]] = {}
 REMINDER_MESSAGES: dict[int, list[int]] = {}
 PENDING_BROADCAST = {}
 PHOTO_PACK_SELECTION = {}
+PHOTO_PREVIEW_STATE = {}
 BOT_START_TIME = int(time.time())
 
 LAST_WELCOME = {}   # {chat_id: message_id}
@@ -449,6 +477,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         
         buttons.append([
+            InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢",callback_data="photo_menu")
+        ])
+
+        buttons.append([
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
             InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
         ])
@@ -551,6 +583,495 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # --- PHOTO MENU ---
+    if data == "photo_menu":
+
+        text = (
+            "<b>🖼 Photo Setting Menu</b>\n\n"
+            "သတ်မှတ်ချင်တဲ့ပုံကို အောက်ကနေရွေးနိုင်ပါတယ်။"
+        )
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🖼 Set Welcome Photo",
+                    callback_data="setwelcome_menu"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🖼 Set Goodbye Photo",
+                    callback_data="setgoodbye_menu"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data="donate_back_start"
+                )
+            ]
+        ])
+
+        await query.message.edit_caption(
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        return
+
+    # =========================
+    # WELCOME PHOTO CATEGORY
+    # =========================
+    if data == "setwelcome_menu":
+
+        text = (
+            "<b>🖼 Welcome Photo Setting</b>\n\n"
+            "OGGY ပုံလား Olivia ပုံလား အောက်မှာရွေးပါ။"
+        )
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🐱 OGGY",
+                    callback_data="welcome_pack_oggy"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "💜 Olivia",
+                    callback_data="welcome_pack_olivia"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data="photo_menu"
+                )
+            ]
+        ])
+
+        await query.message.edit_caption(
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        return
+
+    # =========================
+    # GOODBYE PHOTO CATEGORY
+    # =========================
+    if data == "setgoodbye_menu":
+
+        text = (
+            "<b>🖼 Goodbye Photo Setting</b>\n\n"
+            "OGGY ပုံလား Olivia ပုံလား အောက်မှာရွေးပါ။"
+        )
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🐱 OGGY",
+                    callback_data="goodbye_pack_oggy"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "💜 Olivia",
+                    callback_data="goodbye_pack_olivia"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data="photo_menu"
+                )
+            ]
+        ])
+
+        await query.message.edit_caption(
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+        return
+
+    # =========================
+    # WELCOME PACK PREVIEW
+    # =========================
+    if data.startswith("welcome_pack_"):
+
+        pack_name = data.replace("welcome_pack_", "")
+
+        photos = WELCOME_PREVIEW_PACKS.get(pack_name)
+
+        if not photos:
+            return
+
+        PHOTO_PREVIEW_STATE[user.id] = {
+            "type": "welcome",
+            "pack": pack_name,
+            "index": 0
+        }
+
+        current = photos[0]
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "⬅️",
+                    callback_data="photo_prev"
+                ),
+                InlineKeyboardButton(
+                    "➡️",
+                    callback_data="photo_next"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ Set Photo",
+                    callback_data="setphoto_selectgroup"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data="setwelcome_menu"
+                )
+            ]
+        ])
+
+        await query.message.delete()
+
+        await context.bot.send_photo(
+            chat_id=query.message.chat.id,
+            photo=current,
+            caption=(
+                f"🖼 Welcome Photo Preview\n\n"
+                f"Pack: {pack_name.upper()}\n"
+                f"Photo: 1/{len(photos)}"
+            ),
+            reply_markup=kb
+        )
+
+        return
+
+    # =========================
+    # GOODBYE PACK PREVIEW
+    # =========================
+    if data.startswith("goodbye_pack_"):
+
+        pack_name = data.replace("goodbye_pack_", "")
+
+        photos = GOODBYE_PREVIEW_PACKS.get(pack_name)
+
+        if not photos:
+            return
+
+        PHOTO_PREVIEW_STATE[user.id] = {
+            "type": "goodbye",
+            "pack": pack_name,
+            "index": 0
+        }
+
+        current = photos[0]
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "⬅️",
+                    callback_data="photo_prev"
+                ),
+                InlineKeyboardButton(
+                    "➡️",
+                    callback_data="photo_next"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ Set Photo",
+                    callback_data="setphoto_selectgroup"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data="setgoodbye_menu"
+                )
+            ]
+        ])
+
+        await query.message.delete()
+
+        await context.bot.send_photo(
+            chat_id=query.message.chat.id,
+            photo=current,
+            caption=(
+                f"🖼 Goodbye Photo Preview\n\n"
+                f"Pack: {pack_name.upper()}\n"
+                f"Photo: 1/{len(photos)}"
+            ),
+            reply_markup=kb
+        )
+
+        return
+
+    # =========================
+    # PHOTO PREVIEW NAVIGATION
+    # =========================
+    if data in ("photo_next", "photo_prev"):
+
+        state = PHOTO_PREVIEW_STATE.get(user.id)
+
+        if not state:
+            return
+
+        photo_type = state["type"]
+        pack_name = state["pack"]
+        index = state["index"]
+
+        # choose source
+        if photo_type == "welcome":
+            photos = WELCOME_PREVIEW_PACKS.get(pack_name, [])
+            back_callback = "setwelcome_menu"
+            title = "Welcome"
+        else:
+            photos = GOODBYE_PREVIEW_PACKS.get(pack_name, [])
+            back_callback = "setgoodbye_menu"
+            title = "Goodbye"
+
+        if not photos:
+            return
+
+        # next / prev
+        if data == "photo_next":
+            index += 1
+            if index >= len(photos):
+                index = 0
+
+        elif data == "photo_prev":
+            index -= 1
+            if index < 0:
+                index = len(photos) - 1
+
+        # save new state
+        state["index"] = index
+
+        current_photo = photos[index]
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "⬅️",
+                    callback_data="photo_prev"
+                ),
+                InlineKeyboardButton(
+                    "➡️",
+                    callback_data="photo_next"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ Set Photo",
+                    callback_data="setphoto_selectgroup"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data=back_callback
+                )
+            ]
+        ])
+
+        try:
+            await query.message.edit_media(
+                media=InputMediaPhoto(
+                    media=current_photo,
+                    caption=(
+                        f"🖼 {title} Photo Preview\n\n"
+                        f"Pack: {pack_name.upper()}\n"
+                        f"Photo: {index + 1}/{len(photos)}"
+                    )
+                ),
+                reply_markup=kb
+            )
+        except Exception:
+            pass
+
+        return
+
+    # =========================
+    # SELECT GROUP FOR PHOTO
+    # =========================
+    if data == "setphoto_selectgroup":
+
+        state = PHOTO_PREVIEW_STATE.get(user.id)
+
+        if not state:
+            return
+
+        groups = await get_user_admin_groups(
+            user.id,
+            context
+        )
+
+        if not groups:
+            await query.answer(
+                "❌ Admin Group မတွေ့ပါ",
+                show_alert=True
+            )
+            return
+
+        buttons = []
+
+        for g in groups:
+
+            buttons.append([
+                InlineKeyboardButton(
+                    g["title"][:40],
+                    callback_data=f"applyphoto_{g['id']}"
+                )
+            ])
+
+        buttons.append([
+            InlineKeyboardButton(
+                "⬅️ Back",
+                callback_data=(
+                    f"preview_"
+                    f"{state['type']}_"
+                    f"{state['pack']}"
+                )
+            )
+        ])
+
+        await query.message.edit_caption(
+            caption=(
+                "🏘 Photo အသုံးပြုမယ့် Group ကိုရွေးပါ"
+            ),
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+
+        return
+
+    # =========================
+    # APPLY PHOTO TO GROUP
+    # =========================
+    if data.startswith("applyphoto_"):
+
+        state = PHOTO_PREVIEW_STATE.get(user.id)
+
+        if not state:
+            return
+
+        try:
+            chat_id = int(
+                data.split("_")[1]
+            )
+        except:
+            return
+
+        # security re-check
+        try:
+            member = await context.bot.get_chat_member(
+                chat_id,
+                user.id
+            )
+
+            if member.status not in (
+                "administrator",
+                "creator"
+            ):
+                await query.answer(
+                    "❌ You are not admin",
+                    show_alert=True
+                )
+                return
+
+        except Exception:
+            return
+
+        photo_type = state["type"]
+        pack_name = state["pack"]
+
+        # -------------------------
+        # save welcome pack
+        # -------------------------
+        if photo_type == "welcome":
+
+            await safe_db_execute(
+                """
+                INSERT INTO groups (
+                    group_id,
+                    welcome_photo_pack
+                )
+                VALUES (%s, %s)
+                ON CONFLICT (group_id)
+                DO UPDATE SET
+                    welcome_photo_pack =
+                    EXCLUDED.welcome_photo_pack
+                """,
+                (
+                    chat_id,
+                    pack_name
+                )
+            )
+
+        # -------------------------
+        # save goodbye pack
+        # -------------------------
+        else:
+
+            await safe_db_execute(
+                """
+                INSERT INTO groups (
+                    group_id,
+                    goodbye_photo_pack
+                )
+                VALUES (%s, %s)
+                ON CONFLICT (group_id)
+                DO UPDATE SET
+                    goodbye_photo_pack =
+                    EXCLUDED.goodbye_photo_pack
+                """,
+                (
+                    chat_id,
+                    pack_name
+                )
+            )
+
+        # get group title
+        try:
+            group = await context.bot.get_chat(
+                chat_id
+            )
+
+            group_name = (
+                group.title or str(chat_id)
+            )
+
+        except Exception:
+            group_name = str(chat_id)
+
+        await query.message.edit_caption(
+            caption=(
+                "✅ Successfully Set Photo\n\n"
+                f"🏘 Group: {escape(group_name)}\n"
+                f"🖼 Pack: {pack_name.upper()}\n"
+                f"📦 Type: {photo_type.title()}"
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Back To Menu",
+                        callback_data="setphoto_home"
+                    )
+                ]
+            ])
+        )
+
+        return
+
     # --- 2) Back to original /start ---
     if data == "donate_back_start":
         # rebuild original caption + keyboard exactly like /start private
@@ -589,6 +1110,10 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
 
         buttons.append([InlineKeyboardButton("💖 DONATE US 💖", callback_data="donate_menu")])
+
+        buttons.append([
+            InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢",callback_data="photo_menu")
+        ])
 
         buttons.append([
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
