@@ -202,6 +202,15 @@ async def init_db():
         "ALTER TABLE groups ADD COLUMN IF NOT EXISTS custom_goodbye_photo TEXT"
     )
 
+    # PHOTO PACK COLUMNS
+    await safe_db_execute(
+        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS welcome_photo_pack TEXT"
+    )
+
+    await safe_db_execute(
+        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS goodbye_photo_pack TEXT"
+    )
+
 async def is_group_admin_cached_db(chat_id: int) -> bool:
     rows = await safe_db_execute(
         "SELECT is_admin_cached FROM groups WHERE group_id=%s",
@@ -1274,14 +1283,14 @@ async def set_group_photo_pack(
         """
         INSERT INTO groups (
             group_id,
-            custom_welcome_photo,
-            custom_goodbye_photo
+            welcome_photo_pack,
+            goodbye_photo_pack
         )
         VALUES (%s, %s, %s)
         ON CONFLICT (group_id)
         DO UPDATE SET
-            custom_welcome_photo = EXCLUDED.custom_welcome_photo,
-            custom_goodbye_photo = EXCLUDED.custom_goodbye_photo
+            welcome_photo_pack = EXCLUDED.welcome_photo_pack,
+            goodbye_photo_pack = EXCLUDED.goodbye_photo_pack
         """,
         (
             chat_id,
@@ -2337,9 +2346,10 @@ async def pack_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         ])
 
-    await query.edit_message_text(
-        "🖼 Welcome / Goodbye Photo Pack ကိုရွေးပါ။",
-        reply_markup=InlineKeyboardMarkup(buttons)
+    with contextlib.suppress(BadRequest):
+        await query.edit_message_text(
+            "🖼 Welcome / Goodbye Photo Pack ကိုရွေးပါ။",
+            reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 async def set_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2353,7 +2363,8 @@ async def set_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     try:
-        _, chat_id, pack_name = query.data.split("_", 2)
+        prefix, rest = query.data.split("_", 1)
+        chat_id, pack_name = rest.split("_", 1)
         chat_id = int(chat_id)
     except:
         return
@@ -2765,9 +2776,26 @@ def main():
     app.add_handler(CommandHandler("setwelcomephoto", set_welcome_photo))
     app.add_handler(CommandHandler("setgoodbyephoto", set_goodbye_photo))    
     app.add_handler(CommandHandler("packs", packs_command))
-    app.add_handler(CallbackQueryHandler(donate_callback, pattern=r"^donate"))
     app.add_handler(CallbackQueryHandler(pack_group_callback, pattern=r"^pack_group_"))
     app.add_handler(CallbackQueryHandler(set_pack_callback, pattern=r"^setpack_"))
+    app.add_handler(
+        CallbackQueryHandler(
+            photo_pack_callback,
+            pattern="^(set_welcome_pack|set_goodbye_pack):"
+        )
+    )    
+    app.add_handler(
+        CallbackQueryHandler(
+            donate_callback,
+            pattern=(
+                r"^(donate|photo_menu|setwelcome_menu|"
+                r"setgoodbye_menu|welcome_pack_|"
+                r"goodbye_pack_|photo_next|"
+                r"photo_prev|setphoto_selectgroup|"
+                r"applyphoto_|setphoto_home)"
+            )
+        )
+    )
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
