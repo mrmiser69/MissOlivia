@@ -44,23 +44,23 @@ GOODBYE_IMAGE = "https://i.postimg.cc/bdXNCLc2/Untitled-design-(12).png"
 # ===============================
 WELCOME_PHOTO_PACKS = {
     "oggy": [
-        "https://example.com/oggy1.jpg",
-        "https://example.com/oggy2.jpg",
+        "https://i.postimg.cc/cLSyZPMG/WELCOME-OGGY-PHOTO-1.png",
+        "https://i.postimg.cc/1XqXxpm5/WELCOME-OGGY-PHOTO-2.png",
     ],
     "olivia": [
-        "https://example.com/olivia1.jpg",
-        "https://example.com/olivia2.jpg",
+        "https://i.postimg.cc/xd6cLfpn/WELCOME-OLIVIA-PHOTO-1.png",
+        "https://i.postimg.cc/5tyztKbD/WELCOME-OLIVIA-PHOTO-2.png",
     ]
 }
 
 GOODBYE_PHOTO_PACKS = {
     "oggy": [
-        "https://example.com/oggy_goodbye1.jpg",
-        "https://example.com/oggy_goodbye2.jpg",
+        "https://i.postimg.cc/MZ5zs6ys/GOODBYE-OGGY-PHOTO-1.png",
+        "https://i.postimg.cc/rwLgKkPj/GOODBYE-OGGY-PHOTO-2.png",
     ],
     "olivia": [
-        "https://example.com/olivia_goodbye1.jpg",
-        "https://example.com/olivia_goodbye2.jpg",
+        "https://i.postimg.cc/t45dJVPW/GOODBYE-OLIVIA-PHOTO-1.png",
+        "https://i.postimg.cc/W168ZyR0/GOODBYE-OLIVIA-PHOTO-2.png",
     ]
 }
 
@@ -70,23 +70,23 @@ GOODBYE_PHOTO_PACKS = {
 
 WELCOME_PREVIEW_PACKS = {
     "oggy": [
-        "PASTE_WELCOME_OGGY_PHOTO_1",
-        "PASTE_WELCOME_OGGY_PHOTO_2",
+        "https://i.postimg.cc/cLSyZPMG/WELCOME-OGGY-PHOTO-1.png",
+        "https://i.postimg.cc/1XqXxpm5/WELCOME-OGGY-PHOTO-2.png",
     ],
     "olivia": [
-        "PASTE_WELCOME_OLIVIA_PHOTO_1",
-        "PASTE_WELCOME_OLIVIA_PHOTO_2",
+        "https://i.postimg.cc/xd6cLfpn/WELCOME-OLIVIA-PHOTO-1.png",
+        "https://i.postimg.cc/5tyztKbD/WELCOME-OLIVIA-PHOTO-2.png",
     ]
 }
 
 GOODBYE_PREVIEW_PACKS = {
     "oggy": [
-        "PASTE_GOODBYE_OGGY_PHOTO_1",
-        "PASTE_GOODBYE_OGGY_PHOTO_2",
+        "https://i.postimg.cc/MZ5zs6ys/GOODBYE-OGGY-PHOTO-1.png",
+        "https://i.postimg.cc/rwLgKkPj/GOODBYE-OGGY-PHOTO-2.png",
     ],
     "olivia": [
-        "PASTE_GOODBYE_OLIVIA_PHOTO_1",
-        "PASTE_GOODBYE_OLIVIA_PHOTO_2",
+        "https://i.postimg.cc/t45dJVPW/GOODBYE-OLIVIA-PHOTO-1.png",
+        "https://i.postimg.cc/W168ZyR0/GOODBYE-OLIVIA-PHOTO-2.png",
     ]
 }
 
