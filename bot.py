@@ -593,7 +593,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- PHOTO MENU ---
-    if data == "photo_menu":
+    if data in ("photo_menu", "setphoto_home"):
 
         text = (
             "<b>🖼 Photo Setting Menu</b>\n\n"
@@ -749,7 +749,10 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ])
 
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
 
         await context.bot.send_photo(
             chat_id=query.message.chat.id,
@@ -809,7 +812,10 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
         ])
 
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
 
         await context.bot.send_photo(
             chat_id=query.message.chat.id,
