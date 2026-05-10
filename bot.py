@@ -1007,27 +1007,30 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         photo_type = state["type"]
         pack_name = state["pack"]
+        index = state.get("index", 0)
 
         # -------------------------
         # save welcome pack
         # -------------------------
         if photo_type == "welcome":
+            selected_url = WELCOME_PREVIEW_PACKS[pack_name][index]
 
             await safe_db_execute(
                 """
                 INSERT INTO groups (
                     group_id,
+                    custom_welcome_photo,
                     welcome_photo_pack
                 )
-                VALUES (%s, %s)
+                VALUES (%s, %s, NULL)
                 ON CONFLICT (group_id)
                 DO UPDATE SET
-                    welcome_photo_pack =
-                    EXCLUDED.welcome_photo_pack
+                    custom_welcome_photo = EXCLUDED.custom_welcome_photo,
+                    welcome_photo_pack = NULL
                 """,
                 (
                     chat_id,
-                    pack_name
+                    selected_url
                 )
             )
 
@@ -1035,22 +1038,24 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # save goodbye pack
         # -------------------------
         else:
+            selected_url = GOODBYE_PREVIEW_PACKS[pack_name][index]
 
             await safe_db_execute(
                 """
                 INSERT INTO groups (
                     group_id,
+                    custom_goodbye_photo,
                     goodbye_photo_pack
                 )
-                VALUES (%s, %s)
+                VALUES (%s, %s, NULL)
                 ON CONFLICT (group_id)
                 DO UPDATE SET
-                    goodbye_photo_pack =
-                    EXCLUDED.goodbye_photo_pack
+                    custom_goodbye_photo = EXCLUDED.custom_goodbye_photo,
+                    goodbye_photo_pack = NULL
                 """,
                 (
                     chat_id,
-                    pack_name
+                    selected_url
                 )
             )
 
@@ -1392,7 +1397,7 @@ def build_goodbye_text(member, left_time: str):
 async def get_group_welcome_photo(chat_id: int):
     rows = await safe_db_execute(
         """
-        SELECT welcome_photo_pack
+        SELECT custom_welcome_photo, welcome_photo_pack
         FROM groups
         WHERE group_id=%s
         """,
@@ -1401,6 +1406,10 @@ async def get_group_welcome_photo(chat_id: int):
     )
 
     if rows:
+        custom_photo = rows[0].get("custom_welcome_photo")
+        if custom_photo:
+            return custom_photo
+        
         pack = rows[0].get("welcome_photo_pack")
 
         if pack and pack in WELCOME_PHOTO_PACKS:
@@ -1416,7 +1425,7 @@ async def get_group_welcome_photo(chat_id: int):
 async def get_group_goodbye_photo(chat_id: int):
     rows = await safe_db_execute(
         """
-        SELECT goodbye_photo_pack
+        SELECT custom_goodbye_photo, goodbye_photo_pack
         FROM groups
         WHERE group_id=%s
         """,
@@ -1425,6 +1434,10 @@ async def get_group_goodbye_photo(chat_id: int):
     )
 
     if rows:
+        custom_photo = rows[0].get("custom_goodbye_photo")
+        if custom_photo:
+            return custom_photo
+        
         pack = rows[0].get("goodbye_photo_pack")
 
         if pack and pack in GOODBYE_PHOTO_PACKS:
@@ -2503,7 +2516,7 @@ async def photo_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             await safe_db_execute(
                 """
                 UPDATE groups
-                SET welcome_photo_pack=NULL
+                SET welcome_photo_pack=NULL, custom_welcome_photo=NULL
                 WHERE group_id=%s
                 """,
                 (chat_id,)
@@ -2517,7 +2530,7 @@ async def photo_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await safe_db_execute(
             """
             UPDATE groups
-            SET welcome_photo_pack=%s
+            SET welcome_photo_pack=%s, custom_welcome_photo=NULL
             WHERE group_id=%s
             """,
             (pack_name, chat_id)
@@ -2534,7 +2547,7 @@ async def photo_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             await safe_db_execute(
                 """
                 UPDATE groups
-                SET goodbye_photo_pack=NULL
+                SET goodbye_photo_pack=NULL, custom_goodbye_photo=NULL
                 WHERE group_id=%s
                 """,
                 (chat_id,)
@@ -2548,7 +2561,7 @@ async def photo_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await safe_db_execute(
             """
             UPDATE groups
-            SET goodbye_photo_pack=%s
+            SET goodbye_photo_pack=%s, custom_goodbye_photo=NULL
             WHERE group_id=%s
             """,
             (pack_name, chat_id)
