@@ -607,13 +607,13 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "🖼 Set <b>WELCOME</b> Photo",
+                    "🖼 Set [ WELCOME ] Photo",
                     callback_data="setwelcome_menu"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🖼 Set <b>GOODBYE</b> Photo",
+                    "🖼 Set [ GOODBYE ] Photo",
                     callback_data="setgoodbye_menu"
                 )
             ],
