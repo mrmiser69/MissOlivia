@@ -35,7 +35,7 @@ from psycopg_pool import ConnectionPool  # ✅ ONLY THIS (Supabase safe)
 # ===============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-START_IMAGE = "https://i.postimg.cc/tJF69SbN/ICON.jpg"
+START_IMAGE = "https://i.postimg.cc/fRcvyKLL/photo-2026-05-19-20-40-00.jpg"
 WELCOME_IMAGE = "https://i.postimg.cc/L6hVSnp3/WELCOME.png"
 GOODBYE_IMAGE = "https://i.postimg.cc/bdXNCLc2/Untitled-design-(12).png"
 
