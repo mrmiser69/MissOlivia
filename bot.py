@@ -460,14 +460,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>ငါ၏လုပ်နိုင်စွမ်းကို ကောင်းကောင်းအသုံးချပါ။</b>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📌 ငါ၏လုပ်နိုင်စွမ်း</b>\n\n"
+            "<blockquote>"
             "✅ Welcome Message\n"
             "( Member Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )\n"
             "✅ Goodbye Message\n"
-            "( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )\n\n"
+            "( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )"
+            "</blockquote>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📥 ငါ့ကိုအသုံးပြုရန်</b>\n\n"
-            "➕ ငါ့ကို Group ထဲထည့်ပါ\n"
-            "⭐️ ငါ့ကို Admin ပေးပါ"
+            "<blockquote>"
+            "<b>➊ ငါ့ကို Group ထဲထည့်ပါ</b>\n"
+            "<b>➋ ငါ့ကို Admin ပေးပါ</b>"
+            "</blockquote>"
         )
 
         buttons = []
@@ -482,7 +486,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ✅ Donate Us button (Callback)
         buttons.append([
-            InlineKeyboardButton("💖 DONATE US 💖", callback_data="donate_menu")
+            InlineKeyboardButton("🤍 𝗗𝗢𝗡𝗔𝗧𝗘 𝗨𝗦 🤍", callback_data="donate_menu")
         ])
         
         buttons.append([
@@ -574,14 +578,14 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- 1) Donate Menu ---
     if data == "donate_menu":
         donate_text = (
-            "<b>💖 Support Us !</b>\n\n"
+            "<b>🤍 Support Us !</b>\n\n"
             "မင်းအတွက် အလုပ်ကောင်းကောင်းလုပ်နေတဲ့ Bot ကို Support ပေးနိုင်ပါတယ်။\n\n"
             "<b>👇 အောက်ကနေ ရွေးပါ</b>"
         )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⭐️ 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗕𝗢𝗧 (5 Stars)", callback_data="donate_stars_5")],
             [InlineKeyboardButton("🪙 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗗𝗘𝗩𝗘𝗟𝗢𝗣𝗘𝗥 (TON)", callback_data="donate_ton")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="donate_back_start")],
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="donate_back_start")],
         ])
 
         # Your /start is a PHOTO message -> edit_caption
@@ -615,7 +619,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ Back",
+                    "⬅️ 𝐁𝐚𝐜𝐤",
                     callback_data="donate_back_start"
                 )
             ]
@@ -653,7 +657,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ Back",
+                    "⬅️ 𝐁𝐚𝐜𝐤",
                     callback_data="photo_menu"
                 )
             ]
@@ -691,7 +695,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ Back",
+                    "⬅️ 𝐁𝐚𝐜𝐤",
                     callback_data="photo_menu"
                 )
             ]
@@ -743,7 +747,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ Back",
+                    "⬅️ 𝐁𝐚𝐜𝐤",
                     callback_data="setwelcome_menu"
                 )
             ]
@@ -806,7 +810,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ Back",
+                    "⬅️ 𝐁𝐚𝐜𝐤",
                     callback_data="setgoodbye_menu"
                 )
             ]
@@ -892,7 +896,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "⬅️ Back",
+                    "⬅️ 𝐁𝐚𝐜𝐤",
                     callback_data=back_callback
                 )
             ]
@@ -950,7 +954,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         buttons.append([
             InlineKeyboardButton(
-                "⬅️ Back",
+                "⬅️ 𝐁𝐚𝐜𝐤",
                 callback_data=(
                     f"preview_"
                     f"{state['type']}_"
@@ -1110,14 +1114,18 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>ငါ၏လုပ်နိုင်စွမ်းကို ကောင်းကောင်းအသုံးချပါ။</b>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📌 ငါ၏လုပ်နိုင်စွမ်း</b>\n\n"
+            "<blockquote>"
             "✅ Welcome Message\n"
             "( Member Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )\n"
             "✅ Goodbye Message\n"
-            "( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )\n\n"
+            "( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )"
+            "</blockquote>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📥 ငါ့ကိုအသုံးပြုရန်</b>\n\n"
-            "➕ ငါ့ကို Group ထဲထည့်ပါ\n"
-            "⭐️ ငါ့ကို Admin ပေးပါ"
+            "<blockquote>"
+            "<b>➊ ငါ့ကို Group ထဲထည့်ပါ</b>\n"
+            "<b>➋ ငါ့ကို Admin ပေးပါ</b>"
+            "</blockquote>"
         )
 
         buttons = []
@@ -1129,7 +1137,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             ])
 
-        buttons.append([InlineKeyboardButton("💖 DONATE US 💖", callback_data="donate_menu")])
+        buttons.append([InlineKeyboardButton("🤍 𝗗𝗢𝗡𝗔𝗧𝗘 𝗨𝗦 🤍", callback_data="donate_menu")])
 
         buttons.append([
             InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢",callback_data="photo_menu")
@@ -1157,7 +1165,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "💙 Thank You For Supporting !"
         )
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ Back", callback_data="donate_menu")],
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="donate_menu")],
         ])
         await query.message.edit_caption(
             caption=ton_text,
