@@ -639,7 +639,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = (
             "<b>🖼 Welcome Photo Setting</b>\n\n"
-            "OGGY ပုံလား Olivia ပုံလား အောက်မှာရွေးပါ။"
+            "OGGY ပုံလား Olivia ပုံလား အောက်မှာရွေးနိုင်ပါတယ်။"
         )
 
         kb = InlineKeyboardMarkup([
@@ -677,7 +677,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = (
             "<b>🖼 Goodbye Photo Setting</b>\n\n"
-            "OGGY ပုံလား Olivia ပုံလား အောက်မှာရွေးပါ။"
+            "OGGY ပုံလား Olivia ပုံလား အောက်မှာရွေးနိုင်ပါတယ်။"
         )
 
         kb = InlineKeyboardMarkup([
@@ -741,7 +741,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "✅ Set Photo",
+                    "✅ Set Photo ✅",
                     callback_data="setphoto_selectgroup"
                 )
             ],
@@ -804,7 +804,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "✅ Set Photo",
+                    "✅ Set Photo ✅",
                     callback_data="setphoto_selectgroup"
                 )
             ],
@@ -890,7 +890,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             [
                 InlineKeyboardButton(
-                    "✅ Set Photo",
+                    "✅ Set Photo ✅",
                     callback_data="setphoto_selectgroup"
                 )
             ],
