@@ -1502,12 +1502,13 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
     joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = build_welcome_text(chat, user, joined_time)
 
+    bot_username = context.bot.username or ""
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(
             "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
-            url=f"https://t.me/{bot_me.username}?startgroup=true"
+            url=f"https://t.me/{bot_username}?startgroup=true"
         )
-    ]])
+    ]]) if bot_username else None
 
     try:
         msg = await context.bot.send_photo(
@@ -1515,7 +1516,7 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
             photo=await get_group_welcome_photo(chat.id),
             caption=text,
             parse_mode="HTML",
-            reply_markup=keyboard
+            reply_markup=keyboard or None
         )
         LAST_WELCOME[chat.id] = msg.message_id
         LAST_WELCOME_TS[(chat.id, user.id)] = int(time.time())
@@ -1527,7 +1528,7 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
                 photo=await get_group_welcome_photo(chat.id),
                 caption=text,
                 parse_mode="HTML",
-                reply_markup=keyboard
+                reply_markup=keyboard or None
             )
     except Forbidden:
         return
@@ -1596,12 +1597,13 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     left_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     text = build_goodbye_text(user, left_time)
 
+    bot_username = context.bot.username or ""
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(
             "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
-            url=f"https://t.me/{bot_me.username}?startgroup=true"
+            url=f"https://t.me/{bot_username}?startgroup=true"
         )
-    ]])
+    ]]) if bot_username else None
 
     try:
         await context.bot.send_photo(
@@ -1609,7 +1611,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo=await get_group_goodbye_photo(chat.id),
             caption=text,
             parse_mode="HTML",
-            reply_markup=keyboard
+            reply_markup=keyboard or None
         )
     except RetryAfter as e:
         await asyncio.sleep(getattr(e, "retry_after", 1))
@@ -1619,7 +1621,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 photo=await get_group_goodbye_photo(chat.id),
                 caption=text,
                 parse_mode="HTML",
-                reply_markup=keyboard
+                reply_markup=keyboard or None
             )
     except Forbidden:
         return
