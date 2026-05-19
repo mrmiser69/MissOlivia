@@ -1462,9 +1462,8 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
     new_status = cm.new_chat_member.status
     user = cm.new_chat_member.user
 
-    # bot ကို welcome မလုပ်
-    bot_me = await context.bot.get_me()
-    if user.id == bot_me.id:
+    # ✅ Bot တိုင်း (မိမိ Bot အပါအဝင် အခြား Bot များ) welcome မလုပ်
+    if user.is_bot:
         return
 
     JOIN_STATUSES = {"member", "restricted", "administrator"}
@@ -1554,9 +1553,8 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new = cm.new_chat_member
     user = cm.new_chat_member.user
 
-    # bot ကို goodbye မလုပ်
-    bot_me = await context.bot.get_me()
-    if user.id == bot_me.id:
+    # ✅ Bot တိုင်း (မိမိ Bot အပါအဝင် အခြား Bot များ) goodbye မလုပ်
+    if user.is_bot:
         return
 
     ACTIVE_STATUSES = {"member", "restricted", "administrator"}
@@ -1659,12 +1657,11 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not await can_bot_send(chat.id, context):
         return
 
-    bot_me = await context.bot.get_me()
-
     # JOIN
     new_members = getattr(msg, "new_chat_members", None) or []
     for m in new_members:
-        if m.id == bot_me.id:
+        # ✅ Bot တိုင်း skip
+        if m.is_bot:
             continue
         
         # ✅ fallback debounce
@@ -1687,7 +1684,7 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # LEAVE
     left_member = getattr(msg, "left_chat_member", None)
-    if left_member and left_member.id != bot_me.id:
+    if left_member and not left_member.is_bot:
         last_main = LAST_GOODBYE_TS.get((chat.id, left_member.id))
         if last_main and (int(time.time()) - last_main < 5):
             return
@@ -2921,7 +2918,16 @@ def main():
     app.post_init = on_startup
 
     try:
-        app.run_polling(close_loop=False)
+        app.run_polling(
+            allowed_updates=[
+                "message",
+                "callback_query",
+                "chat_member",       # ✅ Welcome/Goodbye အတွက် အရေးကြီး
+                "my_chat_member",    # ✅ Bot admin status အတွက်
+                "pre_checkout_query",
+            ],
+            close_loop=False
+        )
     finally:
         if pool:
             pool.close()
