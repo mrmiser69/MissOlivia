@@ -461,10 +461,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📌 ငါ၏လုပ်နိုင်စွမ်း</b>\n\n"
             "<blockquote>"
-            "✅ Welcome Message\n"
-            "( Member Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )\n"
-            "✅ Goodbye Message\n"
-            "( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )"
+            "<b>✅ Welcome Message</b>\n"
+            "<b>( Member တစ်ယောက် Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )</b>\n"
+            "<b>✅ Goodbye Message</b>\n"
+            "<b>( Member တစ်ယောက် Group ထဲကထွက်သွားရင် Goodbye Message ပို့မယ် )</b>"
             "</blockquote>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📥 ငါ့ကိုအသုံးပြုရန်</b>\n\n"
@@ -601,7 +601,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = (
             "<b>🖼 Photo Setting Menu</b>\n\n"
-            "သတ်မှတ်ချင်တဲ့ပုံကို အောက်ကနေရွေးနိုင်ပါတယ်။"
+            "သတ်မှတ်ချင်တဲ့ပုံကို အောက်ကနေရွေးနိုင်ပါတယ်။ ⬇⬇⬇⬇⬇"
         )
 
         kb = InlineKeyboardMarkup([
@@ -1115,10 +1115,10 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📌 ငါ၏လုပ်နိုင်စွမ်း</b>\n\n"
             "<blockquote>"
-            "✅ Welcome Message\n"
-            "( Member Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )\n"
-            "✅ Goodbye Message\n"
-            "( Member Group ထဲကထွက်သွားရင်ရင် GoodBye Message ပို့မယ် )"
+            "<b>✅ Welcome Message</b>\n"
+            "<b>( Member တစ်ယောက် Group ထဲဝင်လာရင် Welcome Message ပို့မယ် )</b>\n"
+            "<b>✅ Goodbye Message</b>\n"
+            "<b>( Member တစ်ယောက် Group ထဲကထွက်သွားရင် Goodbye Message ပို့မယ် )</b>"
             "</blockquote>\n\n"
             "➖➖➖➖➖➖➖➖➖➖➖➖\n\n"
             "<b>📥 ငါ့ကိုအသုံးပြုရန်</b>\n\n"
