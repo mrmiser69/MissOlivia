@@ -601,19 +601,19 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = (
             "<b>🖼 Photo Setting Menu</b>\n\n"
-            "သတ်မှတ်ချင်တဲ့ပုံကို အောက်ကနေရွေးနိုင်ပါတယ်။ ⬇⬇⬇⬇⬇"
+            "သတ်မှတ်ချင်တဲ့ပုံကို အောက်ကနေရွေးနိုင်ပါတယ်။"
         )
 
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "🖼 Set Welcome Photo",
+                    "🖼 Set <b>WELCOME</b> Photo",
                     callback_data="setwelcome_menu"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🖼 Set Goodbye Photo",
+                    "🖼 Set <b>GOODBYE</b> Photo",
                     callback_data="setgoodbye_menu"
                 )
             ],
