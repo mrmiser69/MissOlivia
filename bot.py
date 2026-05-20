@@ -5,8 +5,10 @@ import os
 import time
 import asyncio
 import contextlib
+import re
 from html import escape
 from datetime import datetime
+from typing import Optional
 import logging
 
 from telegram import (
@@ -64,10 +66,6 @@ GOODBYE_PHOTO_PACKS = {
     ]
 }
 
-# ===============================
-# PHOTO PREVIEW PACKS
-# ===============================
-
 WELCOME_PREVIEW_PACKS = {
     "oggy": [
         "https://i.postimg.cc/cLSyZPMG/WELCOME-OGGY-PHOTO-1.png",
@@ -96,7 +94,6 @@ DB_USER = os.getenv("SUPABASE_USER")
 DB_PASS = os.getenv("SUPABASE_PASSWORD")
 DB_PORT = int(os.getenv("SUPABASE_PORT", "6543"))
 
-# DB runtime flag (avoid crashing when DB is down / not configured)
 DB_READY = False
 
 # ===============================
@@ -108,36 +105,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error("Unhandled exception", exc_info=context.error)
-
 STATS_CACHE = {"users": 0, "groups": 0, "admin_groups": 0, "last_update": 0}
-STATS_TTL = 300  # 5 minutes
+STATS_TTL = 300
 
 BOT_ADMIN_CACHE: set[int] = set()
 USER_ADMIN_CACHE: dict[int, set[int]] = {}
 REMINDER_MESSAGES: dict[int, list[int]] = {}
+
+# ✅ Broadcast (from link-delete bot — improved version)
 PENDING_BROADCAST = {}
+PENDING_TARGET = {}
+PENDING_BUTTON_WAIT = {}
+PENDING_PREVIEW = {}
+
 PHOTO_PACK_SELECTION = {}
 PHOTO_PREVIEW_STATE = {}
 BOT_START_TIME = int(time.time())
 
-LAST_WELCOME = {}   # {chat_id: message_id}
-LAST_GOODBYE = {}   # {(chat_id, user_id): timestamp}
-LAST_WELCOME_TS = {}   # {(chat_id, user_id): ts}
-LAST_GOODBYE_TS = {}   # {(chat_id, user_id): ts}
+LAST_WELCOME = {}
+LAST_GOODBYE = {}
+LAST_WELCOME_TS = {}
+LAST_GOODBYE_TS = {}
 
-FALLBACK_EVENT_TS = {}  # {(chat_id, user_id, "join"/"left"): ts}
+FALLBACK_EVENT_TS = {}
 FALLBACK_DEBOUNCE_SECONDS = 3
 
 LOG_RATE_CACHE = {}
 LOG_RATE_SECONDS = 60
 
+# ✅ Longer TTL from link-delete bot (300s vs 60s)
 ADMIN_VERIFY_CACHE = {}
-ADMIN_VERIFY_SECONDS = 60
+ADMIN_VERIFY_SECONDS = 300
 
 # =====================================
-# DB POOL (RAILWAY SAFE)
+# DB POOL
 # =====================================
 pool = None
 
@@ -147,26 +148,24 @@ async def db_execute(query, params=None, fetch=False):
     def _run():
         if pool is None:
             raise RuntimeError("DB pool not initialized")
-
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 if fetch:
-                    cols = [d.name for d in cur.description]
-                    return [dict(zip(cols, r)) for r in cur.fetchall()]
+                    cols = [d.name for d in (cur.description or [])]
+                    rows = cur.fetchall()
+                    conn.commit()
+                    return [dict(zip(cols, r)) for r in rows] if cols else rows
                 conn.commit()
 
     return await loop.run_in_executor(None, _run)
 
-# ✅ prevent "Task exception was never retrieved" when DB is down
 async def safe_db_execute(query, params=None, fetch=False):
-    # If DB is not ready, don't even try (avoid log spam + overhead)
     if pool is None or not DB_READY:
         return None
     try:
         return await db_execute(query, params=params, fetch=fetch)
     except Exception as e:
-        # keep bot running even if DB fails
         rate_limited_log("db_error", f"❌ DB ERROR: {e}")
         return None
 
@@ -176,40 +175,28 @@ async def safe_db_execute(query, params=None, fetch=False):
 async def init_db():
     if pool is None:
         return
-    
-    await db_execute("""
+
+    # ✅ Use safe_db_execute (crash-safe) from link-delete bot
+    await safe_db_execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY
         )
     """)
-
-    await db_execute("""
+    await safe_db_execute("""
         CREATE TABLE IF NOT EXISTS groups (
             group_id BIGINT PRIMARY KEY,
             is_admin_cached BOOLEAN DEFAULT FALSE,
-            last_checked_at BIGINT
+            last_checked_at BIGINT,
+            fail_count INT DEFAULT 0,
+            last_fail_at BIGINT
         )
     """)
-    
-    # safety for existing DB (if table already created) - don't crash on DB quirks
     await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS fail_count INT DEFAULT 0")
-    await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS last_fail_at BIGINT") 
-
-    await safe_db_execute(
-        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS custom_welcome_photo TEXT"
-    )
-    await safe_db_execute(
-        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS custom_goodbye_photo TEXT"
-    )
-
-    # PHOTO PACK COLUMNS
-    await safe_db_execute(
-        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS welcome_photo_pack TEXT"
-    )
-
-    await safe_db_execute(
-        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS goodbye_photo_pack TEXT"
-    )
+    await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS last_fail_at BIGINT")
+    await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS custom_welcome_photo TEXT")
+    await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS custom_goodbye_photo TEXT")
+    await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS welcome_photo_pack TEXT")
+    await safe_db_execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS goodbye_photo_pack TEXT")
 
 async def is_group_admin_cached_db(chat_id: int) -> bool:
     rows = await safe_db_execute(
@@ -241,7 +228,6 @@ def clear_reminders(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         if name.startswith("auto_leave_") or data.get("type") == "admin_reminder":
             job.schedule_removal()
 
-# pagination helper (OFFSET version) - from your pasted code
 async def iter_db_ids(query, batch_size=500):
     offset = 0
     while True:
@@ -257,11 +243,11 @@ async def iter_db_ids(query, batch_size=500):
         yield rows
         offset += batch_size
 
-async def update_progress(msg, sent, total):
+async def update_progress(msg, done, total):
     if total <= 0:
         percent = 100
     else:
-        percent = int((sent / total) * 100)
+        percent = int((done / total) * 100)
     bar_blocks = min(10, percent // 10)
     bar = "█" * bar_blocks + "░" * (10 - bar_blocks)
     try:
@@ -289,16 +275,10 @@ async def is_bot_admin(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool
         return False
 
 async def can_bot_send(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """
-    Welcome/Goodbye အတွက် — Bot က message ပို့လို့ရမရ စစ်တာ
-    Admin မဟုတ်လည်း can_send_messages ရရင် ပို့နိုင်တယ် (restricted cases)
-    """
     try:
         me = await context.bot.get_chat_member(chat_id, context.bot.id)
-        # If restricted/member and cannot send -> False
         if me.status in ("restricted", "member") and not getattr(me, "can_send_messages", True):
             return False
-        # left/kicked -> no access
         if me.status in ("left", "kicked"):
             return False
         return True
@@ -316,20 +296,15 @@ async def ensure_bot_admin_live(chat_id: int, context: ContextTypes.DEFAULT_TYPE
         me = await context.bot.get_chat_member(chat_id, context.bot.id)
     except ChatMigrated as e:
         new_id = e.new_chat_id
-
         ADMIN_VERIFY_CACHE.pop(chat_id, None)
-        # IMPORTANT: don't throttle the immediate retry; force fresh API check
         ADMIN_VERIFY_CACHE.pop(new_id, None)
 
-        # -------- RAM migrate --------
         if chat_id in BOT_ADMIN_CACHE:
             BOT_ADMIN_CACHE.discard(chat_id)
             BOT_ADMIN_CACHE.add(new_id)
         USER_ADMIN_CACHE[new_id] = USER_ADMIN_CACHE.pop(chat_id, set())
         REMINDER_MESSAGES[new_id] = REMINDER_MESSAGES.pop(chat_id, [])
 
-        # -------- DB migrate --------
-        # ✅ IMPORTANT: UPSERT new row + remove old row (avoid stale rows)
         context.application.create_task(
             safe_db_execute(
                 """
@@ -346,12 +321,9 @@ async def ensure_bot_admin_live(chat_id: int, context: ContextTypes.DEFAULT_TYPE
         context.application.create_task(
             safe_db_execute("DELETE FROM groups WHERE group_id=%s", (chat_id,))
         )
-
-        # retry with new chat_id
         return await ensure_bot_admin_live(new_id, context)
     except Exception:
-        ADMIN_VERIFY_CACHE.pop(chat_id, None)                        
-        # cannot access -> treat as removed / no admin
+        ADMIN_VERIFY_CACHE.pop(chat_id, None)
         BOT_ADMIN_CACHE.discard(chat_id)
         USER_ADMIN_CACHE.pop(chat_id, None)
         REMINDER_MESSAGES.pop(chat_id, None)
@@ -361,7 +333,6 @@ async def ensure_bot_admin_live(chat_id: int, context: ContextTypes.DEFAULT_TYPE
     can_delete = getattr(me, "can_delete_messages", False)
     if is_admin and can_delete:
         BOT_ADMIN_CACHE.add(chat_id)
-        # ✅ keep DB in-sync (support-only) so broadcast/stats stay correct
         context.application.create_task(
             safe_db_execute(
                 """
@@ -431,12 +402,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot = context.bot
     bot_username = bot.username or ""
 
-    # ===============================
-    # 🔒 PRIVATE CHAT (/start)
-    # ===============================
     if chat.type == "private":
-
-        # save user
         context.application.create_task(
             safe_db_execute(
                 "INSERT INTO users VALUES (%s) ON CONFLICT DO NOTHING",
@@ -446,7 +412,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_name = escape(user.first_name or "User")
         bot_name = escape(bot.first_name or "Bot")
-
         user_mention = f"<a href='tg://user?id={user.id}'>{user_name}</a>"
         bot_mention = (
             f"<a href='https://t.me/{bot_username}'>{bot_name}</a>"
@@ -475,7 +440,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         buttons = []
-
         if bot_username:
             buttons.append([
                 InlineKeyboardButton(
@@ -483,91 +447,86 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     url=f"https://t.me/{bot_username}?startgroup=true"
                 )
             ])
-        
-        # ✅ Donate Us button (Callback)
-        buttons.append([
-            InlineKeyboardButton("🤍 𝗗𝗢𝗡𝗔𝗧𝗘 𝗨𝗦 🤍", callback_data="donate_menu")
-        ])
-        
-        buttons.append([
-            InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢",callback_data="photo_menu")
-        ])
-
+        buttons.append([InlineKeyboardButton("🤍 𝗗𝗢𝗡𝗔𝗧𝗘 𝗨𝗦 🤍", callback_data="donate_menu")])
+        buttons.append([InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢", callback_data="photo_menu")])
         buttons.append([
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
             InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
         ])
 
-        await msg.reply_photo(
-            photo=START_IMAGE,
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        try:
+            await msg.reply_photo(
+                photo=START_IMAGE,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+        except BadRequest:
+            await msg.reply_text(
+                text=text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
         return
-    
-    # ===============================
-    # 👥 GROUP / SUPERGROUP (/start)
-    # ===============================
-    if chat.type in ("group", "supergroup"):
 
-        # 🔐 Check bot status
+    if chat.type in ("group", "supergroup"):
         try:
             me = await bot.get_chat_member(chat.id, bot.id)
         except:
-            return  # cannot access → silent
-
-        # 🔕 No send permission → SILENT
-        if me.status in ("member", "restricted"):
-            if not getattr(me, "can_send_messages", True):
-                return  # silent
-
-        # ---------------------------
-        # ✅ BOT IS ADMIN
-        # ---------------------------
-        if me.status in ("administrator", "creator"):
-            await bot.send_message(
-                chat.id,
-                "✅ Bot ကို Admin အဖြစ်ခန့်ထားပြီးသားပါ။\n\n"
-                "✅ <b>Welcome Message</b>\n"
-                "✅ <b>Goodbye Message</b>\n\n"
-                "🤖 Bot က လက်ရှိ Group မှာ ကောင်းကောင်းအလုပ်လုပ်နေပါပြီး။",
-                parse_mode="HTML"
-            )
             return
 
-        # ---------------------------
-        # ❌ BOT IS NOT ADMIN
-        # ---------------------------
-        await bot.send_message(
-            chat.id,
-            "⚠️ <b>Bot သည် Admin မဟုတ်သေးပါ</b>\n\n"
-            "🤖 <b>Bot ကို အလုပ်လုပ်စေရန်</b>\n"
-            "⭐️ <b>Admin Permission ပေးပါ</b>\n\n"
-            "Required: Permission",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    "⭐ 𝗚𝗜𝗩𝗘 𝗔𝗗𝗠𝗜𝗡 𝗣𝗘𝗥𝗠𝗜𝗦𝗦𝗜𝗢𝗡",
-                    url=f"https://t.me/{bot_username}?startgroup=true"
+        if me.status in ("member", "restricted"):
+            if not getattr(me, "can_send_messages", True):
+                return
+
+        if me.status in ("administrator", "creator"):
+            try:
+                await bot.send_message(
+                    chat.id,
+                    "✅ Bot ကို Admin အဖြစ်ခန့်ထားပြီးသားပါ။\n\n"
+                    "✅ <b>Welcome Message</b>\n"
+                    "✅ <b>Goodbye Message</b>\n\n"
+                    "🤖 Bot က လက်ရှိ Group မှာ ကောင်းကောင်းအလုပ်လုပ်နေပါပြီး။",
+                    parse_mode="HTML"
                 )
-            ]])
-        )
+            except RetryAfter:
+                return
+            except Exception:
+                return
+            return
+
+        try:
+            await bot.send_message(
+                chat.id,
+                "⚠️ <b>Bot သည် Admin မဟုတ်သေးပါ</b>\n\n"
+                "🤖 <b>Bot ကို အလုပ်လုပ်စေရန်</b>\n"
+                "⭐️ <b>Admin Permission ပေးပါ</b>\n\n"
+                "Required: Permission",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "⭐ 𝗚𝗜𝗩𝗘 𝗔𝗗𝗠𝗜𝗡 𝗣𝗘𝗥𝗠𝗜𝗦𝗦𝗜𝗢𝗡",
+                        url=f"https://t.me/{bot_username}?startgroup=true"
+                    )
+                ]])
+            )
+        except RetryAfter:
+            return
+        except Exception:
+            return
         return
 
 # ===============================
 # Donate Callback
-# =============================== 
+# ===============================
 async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not query.message:
         return
 
     await query.answer()
-
     data = (query.data or "").strip()
 
-    # This donate UI only makes sense in private chat
     if query.message.chat.type != "private":
         return
 
@@ -575,7 +534,6 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = bot.username or ""
     user = update.effective_user
 
-    # --- 1) Donate Menu ---
     if data == "donate_menu":
         donate_text = (
             "<b>🤍 Support Us !</b>\n\n"
@@ -587,268 +545,105 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🪙 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 𝗗𝗘𝗩𝗘𝗟𝗢𝗣𝗘𝗥 (TON)", callback_data="donate_ton")],
             [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="donate_back_start")],
         ])
-
-        # Your /start is a PHOTO message -> edit_caption
-        await query.message.edit_caption(
-            caption=donate_text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        await query.message.edit_caption(caption=donate_text, parse_mode="HTML", reply_markup=kb)
         return
 
-    # --- PHOTO MENU ---
     if data in ("photo_menu", "setphoto_home"):
-
         text = (
             "<b>🖼 Photo Setting Menu</b>\n\n"
             "သတ်မှတ်ချင်တဲ့ပုံကို အောက်ကနေရွေးနိုင်ပါတယ်။"
         )
-
         kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🖼 Set [ WELCOME ] Photo",
-                    callback_data="setwelcome_menu"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🖼 Set [ GOODBYE ] Photo",
-                    callback_data="setgoodbye_menu"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ 𝐁𝐚𝐜𝐤",
-                    callback_data="donate_back_start"
-                )
-            ]
+            [InlineKeyboardButton("🖼 Set [ WELCOME ] Photo", callback_data="setwelcome_menu")],
+            [InlineKeyboardButton("🖼 Set [ GOODBYE ] Photo", callback_data="setgoodbye_menu")],
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="donate_back_start")]
         ])
-
-        await query.message.edit_caption(
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        await query.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=kb)
         return
 
-    # =========================
-    # WELCOME PHOTO CATEGORY
-    # =========================
     if data == "setwelcome_menu":
-
         text = (
             "<b>🖼 Welcome Photo Setting</b>\n\n"
             "OGGY ပုံလား Olivia ပုံလား အောက်မှာရွေးနိုင်ပါတယ်။"
         )
-
         kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🐱 OGGY",
-                    callback_data="welcome_pack_oggy"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "💜 Olivia",
-                    callback_data="welcome_pack_olivia"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ 𝐁𝐚𝐜𝐤",
-                    callback_data="photo_menu"
-                )
-            ]
+            [InlineKeyboardButton("🐱 OGGY", callback_data="welcome_pack_oggy")],
+            [InlineKeyboardButton("💜 Olivia", callback_data="welcome_pack_olivia")],
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="photo_menu")]
         ])
-
-        await query.message.edit_caption(
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        await query.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=kb)
         return
 
-    # =========================
-    # GOODBYE PHOTO CATEGORY
-    # =========================
     if data == "setgoodbye_menu":
-
         text = (
             "<b>🖼 Goodbye Photo Setting</b>\n\n"
             "OGGY ပုံလား Olivia ပုံလား အောက်မှာရွေးနိုင်ပါတယ်။"
         )
-
         kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "🐱 OGGY",
-                    callback_data="goodbye_pack_oggy"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "💜 Olivia",
-                    callback_data="goodbye_pack_olivia"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ 𝐁𝐚𝐜𝐤",
-                    callback_data="photo_menu"
-                )
-            ]
+            [InlineKeyboardButton("🐱 OGGY", callback_data="goodbye_pack_oggy")],
+            [InlineKeyboardButton("💜 Olivia", callback_data="goodbye_pack_olivia")],
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="photo_menu")]
         ])
-
-        await query.message.edit_caption(
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        await query.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=kb)
         return
 
-    # =========================
-    # WELCOME PACK PREVIEW
-    # =========================
     if data.startswith("welcome_pack_"):
-
         pack_name = data.replace("welcome_pack_", "")
-
         photos = WELCOME_PREVIEW_PACKS.get(pack_name)
-
         if not photos:
             return
-
-        PHOTO_PREVIEW_STATE[user.id] = {
-            "type": "welcome",
-            "pack": pack_name,
-            "index": 0
-        }
-
+        PHOTO_PREVIEW_STATE[user.id] = {"type": "welcome", "pack": pack_name, "index": 0}
         current = photos[0]
-
         kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "⬅️",
-                    callback_data="photo_prev"
-                ),
-                InlineKeyboardButton(
-                    "➡️",
-                    callback_data="photo_next"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ Set Photo ✅",
-                    callback_data="setphoto_selectgroup"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ 𝐁𝐚𝐜𝐤",
-                    callback_data="setwelcome_menu"
-                )
-            ]
+            [InlineKeyboardButton("⬅️", callback_data="photo_prev"),
+             InlineKeyboardButton("➡️", callback_data="photo_next")],
+            [InlineKeyboardButton("✅ Set Photo ✅", callback_data="setphoto_selectgroup")],
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="setwelcome_menu")]
         ])
-
         try:
             await query.message.delete()
         except Exception:
             pass
-
         await context.bot.send_photo(
             chat_id=query.message.chat.id,
             photo=current,
-            caption=(
-                f"🖼 Welcome Photo Preview\n\n"
-                f"Pack: {pack_name.upper()}\n"
-                f"Photo: 1/{len(photos)}"
-            ),
+            caption=f"🖼 Welcome Photo Preview\n\nPack: {pack_name.upper()}\nPhoto: 1/{len(photos)}",
             reply_markup=kb
         )
-
         return
 
-    # =========================
-    # GOODBYE PACK PREVIEW
-    # =========================
     if data.startswith("goodbye_pack_"):
-
         pack_name = data.replace("goodbye_pack_", "")
-
         photos = GOODBYE_PREVIEW_PACKS.get(pack_name)
-
         if not photos:
             return
-
-        PHOTO_PREVIEW_STATE[user.id] = {
-            "type": "goodbye",
-            "pack": pack_name,
-            "index": 0
-        }
-
+        PHOTO_PREVIEW_STATE[user.id] = {"type": "goodbye", "pack": pack_name, "index": 0}
         current = photos[0]
-
         kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "⬅️",
-                    callback_data="photo_prev"
-                ),
-                InlineKeyboardButton(
-                    "➡️",
-                    callback_data="photo_next"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ Set Photo ✅",
-                    callback_data="setphoto_selectgroup"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ 𝐁𝐚𝐜𝐤",
-                    callback_data="setgoodbye_menu"
-                )
-            ]
+            [InlineKeyboardButton("⬅️", callback_data="photo_prev"),
+             InlineKeyboardButton("➡️", callback_data="photo_next")],
+            [InlineKeyboardButton("✅ Set Photo ✅", callback_data="setphoto_selectgroup")],
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="setgoodbye_menu")]
         ])
-
         try:
             await query.message.delete()
         except Exception:
             pass
-
         await context.bot.send_photo(
             chat_id=query.message.chat.id,
             photo=current,
-            caption=(
-                f"🖼 Goodbye Photo Preview\n\n"
-                f"Pack: {pack_name.upper()}\n"
-                f"Photo: 1/{len(photos)}"
-            ),
+            caption=f"🖼 Goodbye Photo Preview\n\nPack: {pack_name.upper()}\nPhoto: 1/{len(photos)}",
             reply_markup=kb
         )
-
         return
 
-    # =========================
-    # PHOTO PREVIEW NAVIGATION
-    # =========================
     if data in ("photo_next", "photo_prev"):
-
         state = PHOTO_PREVIEW_STATE.get(user.id)
-
         if not state:
             return
-
         photo_type = state["type"]
         pack_name = state["pack"]
         index = state["index"]
-
-        # choose source
         if photo_type == "welcome":
             photos = WELCOME_PREVIEW_PACKS.get(pack_name, [])
             back_callback = "setwelcome_menu"
@@ -857,155 +652,63 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photos = GOODBYE_PREVIEW_PACKS.get(pack_name, [])
             back_callback = "setgoodbye_menu"
             title = "Goodbye"
-
         if not photos:
             return
-
-        # next / prev
         if data == "photo_next":
-            index += 1
-            if index >= len(photos):
-                index = 0
-
-        elif data == "photo_prev":
-            index -= 1
-            if index < 0:
-                index = len(photos) - 1
-
-        # save new state
+            index = (index + 1) % len(photos)
+        else:
+            index = (index - 1) % len(photos)
         state["index"] = index
-
         current_photo = photos[index]
-
         kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "⬅️",
-                    callback_data="photo_prev"
-                ),
-                InlineKeyboardButton(
-                    "➡️",
-                    callback_data="photo_next"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅ Set Photo ✅",
-                    callback_data="setphoto_selectgroup"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ 𝐁𝐚𝐜𝐤",
-                    callback_data=back_callback
-                )
-            ]
+            [InlineKeyboardButton("⬅️", callback_data="photo_prev"),
+             InlineKeyboardButton("➡️", callback_data="photo_next")],
+            [InlineKeyboardButton("✅ Set Photo ✅", callback_data="setphoto_selectgroup")],
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data=back_callback)]
         ])
-
         try:
             await query.message.edit_media(
                 media=InputMediaPhoto(
                     media=current_photo,
-                    caption=(
-                        f"🖼 {title} Photo Preview\n\n"
-                        f"Pack: {pack_name.upper()}\n"
-                        f"Photo: {index + 1}/{len(photos)}"
-                    )
+                    caption=f"🖼 {title} Photo Preview\n\nPack: {pack_name.upper()}\nPhoto: {index + 1}/{len(photos)}"
                 ),
                 reply_markup=kb
             )
         except Exception:
             pass
-
         return
 
-    # =========================
-    # SELECT GROUP FOR PHOTO
-    # =========================
     if data == "setphoto_selectgroup":
-
         state = PHOTO_PREVIEW_STATE.get(user.id)
-
         if not state:
             return
-
-        groups = await get_user_admin_groups(
-            user.id,
-            context
-        )
-
+        groups = await get_user_admin_groups(user.id, context)
         if not groups:
-            await query.answer(
-                "❌ Admin Group မတွေ့ပါ",
-                show_alert=True
-            )
+            await query.answer("❌ Admin Group မတွေ့ပါ", show_alert=True)
             return
-
         buttons = []
-
         for g in groups:
-
-            buttons.append([
-                InlineKeyboardButton(
-                    g["title"][:40],
-                    callback_data=f"applyphoto_{g['id']}"
-                )
-            ])
-
-        buttons.append([
-            InlineKeyboardButton(
-                "⬅️ 𝐁𝐚𝐜𝐤",
-                callback_data=(
-                    f"preview_"
-                    f"{state['type']}_"
-                    f"{state['pack']}"
-                )
-            )
-        ])
-
+            buttons.append([InlineKeyboardButton(g["title"][:40], callback_data=f"applyphoto_{g['id']}")])
+        buttons.append([InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data=f"preview_{state['type']}_{state['pack']}")])
         await query.message.edit_caption(
-            caption=(
-                "🏘 Photo အသုံးပြုမယ့် Group ကိုရွေးပါ"
-            ),
+            caption="🏘 Photo အသုံးပြုမယ့် Group ကိုရွေးပါ",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
-
         return
 
-    # =========================
-    # APPLY PHOTO TO GROUP
-    # =========================
     if data.startswith("applyphoto_"):
-
         state = PHOTO_PREVIEW_STATE.get(user.id)
-
         if not state:
             return
-
         try:
-            chat_id = int(
-                data.split("_")[1]
-            )
+            chat_id = int(data.split("_")[1])
         except:
             return
-
-        # security re-check
         try:
-            member = await context.bot.get_chat_member(
-                chat_id,
-                user.id
-            )
-
-            if member.status not in (
-                "administrator",
-                "creator"
-            ):
-                await query.answer(
-                    "❌ You are not admin",
-                    show_alert=True
-                )
+            member = await context.bot.get_chat_member(chat_id, user.id)
+            if member.status not in ("administrator", "creator"):
+                await query.answer("❌ You are not admin", show_alert=True)
                 return
-
         except Exception:
             return
 
@@ -1013,66 +716,32 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pack_name = state["pack"]
         index = state.get("index", 0)
 
-        # -------------------------
-        # save welcome pack
-        # -------------------------
         if photo_type == "welcome":
             selected_url = WELCOME_PREVIEW_PACKS[pack_name][index]
-
             await safe_db_execute(
                 """
-                INSERT INTO groups (
-                    group_id,
-                    custom_welcome_photo,
-                    welcome_photo_pack
-                )
+                INSERT INTO groups (group_id, custom_welcome_photo, welcome_photo_pack)
                 VALUES (%s, %s, NULL)
                 ON CONFLICT (group_id)
-                DO UPDATE SET
-                    custom_welcome_photo = EXCLUDED.custom_welcome_photo,
-                    welcome_photo_pack = NULL
+                DO UPDATE SET custom_welcome_photo = EXCLUDED.custom_welcome_photo, welcome_photo_pack = NULL
                 """,
-                (
-                    chat_id,
-                    selected_url
-                )
+                (chat_id, selected_url)
             )
-
-        # -------------------------
-        # save goodbye pack
-        # -------------------------
         else:
             selected_url = GOODBYE_PREVIEW_PACKS[pack_name][index]
-
             await safe_db_execute(
                 """
-                INSERT INTO groups (
-                    group_id,
-                    custom_goodbye_photo,
-                    goodbye_photo_pack
-                )
+                INSERT INTO groups (group_id, custom_goodbye_photo, goodbye_photo_pack)
                 VALUES (%s, %s, NULL)
                 ON CONFLICT (group_id)
-                DO UPDATE SET
-                    custom_goodbye_photo = EXCLUDED.custom_goodbye_photo,
-                    goodbye_photo_pack = NULL
+                DO UPDATE SET custom_goodbye_photo = EXCLUDED.custom_goodbye_photo, goodbye_photo_pack = NULL
                 """,
-                (
-                    chat_id,
-                    selected_url
-                )
+                (chat_id, selected_url)
             )
 
-        # get group title
         try:
-            group = await context.bot.get_chat(
-                chat_id
-            )
-
-            group_name = (
-                group.title or str(chat_id)
-            )
-
+            group = await context.bot.get_chat(chat_id)
+            group_name = group.title or str(chat_id)
         except Exception:
             group_name = str(chat_id)
 
@@ -1084,21 +753,13 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📦 Type: {photo_type.title()}"
             ),
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back To Menu",
-                        callback_data="setphoto_home"
-                    )
-                ]
-            ])
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back To Menu", callback_data="setphoto_home")
+            ]])
         )
-
         return
 
-    # --- 2) Back to original /start ---
     if data == "donate_back_start":
-        # rebuild original caption + keyboard exactly like /start private
         user_name = escape(user.first_name or "User")
         bot_name = escape(bot.first_name or "Bot")
         user_mention = f"<a href='tg://user?id={user.id}'>{user_name}</a>"
@@ -1106,7 +767,6 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<a href='https://t.me/{bot_username}'>{bot_name}</a>"
             if bot_username else bot_name
         )
-
         start_text = (
             f"<b>────「 {bot_mention} 」────</b>\n\n"
             f"<b>ဟယ်လို {user_mention} ! 👋</b>\n\n"
@@ -1127,58 +787,34 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>➋ ငါ့ကို Admin ပေးပါ</b>"
             "</blockquote>"
         )
-
         buttons = []
         if bot_username:
-            buttons.append([
-                InlineKeyboardButton(
-                    "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
-                    url=f"https://t.me/{bot_username}?startgroup=true"
-                )
-            ])
-
+            buttons.append([InlineKeyboardButton("➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣", url=f"https://t.me/{bot_username}?startgroup=true")])
         buttons.append([InlineKeyboardButton("🤍 𝗗𝗢𝗡𝗔𝗧𝗘 𝗨𝗦 🤍", callback_data="donate_menu")])
-
-        buttons.append([
-            InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢",callback_data="photo_menu")
-        ])
-
+        buttons.append([InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢", callback_data="photo_menu")])
         buttons.append([
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
             InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
         ])
-
         await query.message.edit_caption(
-            caption=start_text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            caption=start_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons)
         )
         return
 
-    # --- 3) TON address page ---
     if data == "donate_ton":
         TON_ADDRESS = os.getenv("TON_ADDRESS", "PUT_YOUR_TON_ADDRESS_HERE")
         ton_text = (
             "<b>🪙 Support Developer (TON)</b>\n\n"
             f"<b>TON Address:</b>\n<code>{escape(TON_ADDRESS)}</code>\n\n"
-            "✅ Address ကို copy လုပ်ပြီး TON coin ပေးပို့နိုင်ပါတယ်ဗျ။\n"
-            "💙 Thank You For Supporting !"
+            "<blockquote><b>✅ Address ကို copy လုပ်ပြီး TON coin ပေးပို့နိုင်ပါတယ်ဗျ။</b></blockquote>\n"
+            "<b>💙 Thank You For Supporting !</b>"
         )
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="donate_menu")],
-        ])
-        await query.message.edit_caption(
-            caption=ton_text,
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤", callback_data="donate_menu")]])
+        await query.message.edit_caption(caption=ton_text, parse_mode="HTML", reply_markup=kb)
         return
 
-    # --- 4) Stars 5 invoice ---
     if data == "donate_stars_5":
-        # Stars invoice needs pre_checkout + successful payment handlers too
         from telegram import LabeledPrice
-
         try:
             await context.bot.send_invoice(
                 chat_id=query.message.chat.id,
@@ -1190,39 +826,32 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 payload=f"donate_bot_5_{user.id}",
                 currency="XTR",
                 prices=[LabeledPrice("Support", 5)],
-                provider_token="",  # Stars often use empty provider_token
+                provider_token="",
             )
         except Exception as e:
-            # Keep UX: show error as alert, not new message spam
             await query.answer(f"❌ Donate မလုပ်နိုင်ပါ: {e}", show_alert=True)
         return
 
 # ===============================
-# Precheckout Callback
+# Precheckout + Payment
 # ===============================
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
     if not query:
         return
-
-    # ✅ accept only our donate payloads
     if not (query.payload or "").startswith("donate_bot_5_"):
         await query.answer(ok=False, error_message="Invalid payment payload.")
         return
-
     await query.answer(ok=True)
 
-# ===============================
-# Successful Payment Handler
-# ===============================
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg:
         return
-    await msg.reply_text("✅ ကျေးဇူးတင်ပါတယ်! Stars Donate လုပ်ပြီးပါပြီ ⭐️") 
+    await msg.reply_text("✅ ကျေးဇူးတင်ပါတယ်! Stars Donate လုပ်ပြီးပါပြီ ⭐️")
 
 # ===============================
-# /stats (OWNER COMMANDS)
+# /stats
 # ===============================
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1233,18 +862,9 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = time.time()
     if now - STATS_CACHE["last_update"] > STATS_TTL:
-        users = await safe_db_execute(
-            "SELECT COUNT(*) AS c FROM users",
-            fetch=True
-        )
-        groups = await safe_db_execute(
-            "SELECT COUNT(*) AS c FROM groups",
-            fetch=True
-        )
-        admin_groups = await safe_db_execute(
-            "SELECT COUNT(*) AS c FROM groups WHERE is_admin_cached = TRUE",
-            fetch=True
-        )
+        users = await safe_db_execute("SELECT COUNT(*) AS c FROM users", fetch=True)
+        groups = await safe_db_execute("SELECT COUNT(*) AS c FROM groups", fetch=True)
+        admin_groups = await safe_db_execute("SELECT COUNT(*) AS c FROM groups WHERE is_admin_cached = TRUE", fetch=True)
 
         if users is None or groups is None or admin_groups is None:
             await msg.reply_text("⚠️ Stats မတွက်နိုင်ပါ (DB unavailable)")
@@ -1254,7 +874,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         STATS_CACHE["groups"] = int(groups[0]["c"]) if groups else 0
         STATS_CACHE["admin_groups"] = int(admin_groups[0]["c"]) if admin_groups else 0
         STATS_CACHE["last_update"] = now
-
 
     no_admin = max(0, STATS_CACHE["groups"] - STATS_CACHE["admin_groups"])
     uptime = int(time.time()) - BOT_START_TIME
@@ -1273,103 +892,71 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===============================
 # PHOTO PACK HELPERS
 # ===============================
-async def get_group_photo_pack(chat_id: int):
-    rows = await safe_db_execute(
-        """
-        SELECT custom_welcome_photo, custom_goodbye_photo
-        FROM groups
-        WHERE group_id=%s
-        """,
-        (chat_id,),
-        fetch=True
-    )
+async def get_user_admin_groups(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    groups = []
+    rows = await safe_db_execute("SELECT group_id FROM groups ORDER BY group_id", fetch=True) or []
+    for row in rows:
+        gid = row["group_id"]
+        try:
+            member = await context.bot.get_chat_member(gid, user_id)
+            if member.status not in ("administrator", "creator"):
+                continue
+            chat = await context.bot.get_chat(gid)
+            groups.append({"id": gid, "title": chat.title or str(gid)})
+        except Exception:
+            continue
+    return groups
 
-    if not rows:
-        return None, None
-
-    return (
-        rows[0].get("custom_welcome_photo"),
-        rows[0].get("custom_goodbye_photo")
-    )
-
-
-async def set_group_photo_pack(
-    chat_id: int,
-    welcome_pack: str,
-    goodbye_pack: str
-):
+async def set_group_photo_pack(chat_id: int, welcome_pack: str, goodbye_pack: str):
     await safe_db_execute(
         """
-        INSERT INTO groups (
-            group_id,
-            welcome_photo_pack,
-            goodbye_photo_pack
-        )
+        INSERT INTO groups (group_id, welcome_photo_pack, goodbye_photo_pack)
         VALUES (%s, %s, %s)
         ON CONFLICT (group_id)
         DO UPDATE SET
             welcome_photo_pack = EXCLUDED.welcome_photo_pack,
             goodbye_photo_pack = EXCLUDED.goodbye_photo_pack
         """,
-        (
-            chat_id,
-            welcome_pack,
-            goodbye_pack
-        )
+        (chat_id, welcome_pack, goodbye_pack)
     )
 
-
-def get_random_pack_photo(pack_dict: dict, pack_name: str):
-    import random
-
-    photos = pack_dict.get(pack_name)
-
-    if not photos:
-        return None
-
-    return random.choice(photos)
-
-async def get_user_admin_groups(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    groups = []
-
+async def get_group_welcome_photo(chat_id: int):
     rows = await safe_db_execute(
-        """
-        SELECT group_id
-        FROM groups
-        ORDER BY group_id
-        """,
-        fetch=True
-    ) or []
+        "SELECT custom_welcome_photo, welcome_photo_pack FROM groups WHERE group_id=%s",
+        (chat_id,), fetch=True
+    )
+    if rows:
+        custom_photo = rows[0].get("custom_welcome_photo")
+        if custom_photo:
+            return custom_photo
+        pack = rows[0].get("welcome_photo_pack")
+        if pack and pack in WELCOME_PHOTO_PACKS:
+            import random
+            return random.choice(WELCOME_PHOTO_PACKS[pack])
+    return WELCOME_IMAGE
 
-    for row in rows:
-        gid = row["group_id"]
-
-        try:
-            member = await context.bot.get_chat_member(gid, user_id)
-
-            if member.status not in ("administrator", "creator"):
-                continue
-
-            chat = await context.bot.get_chat(gid)
-
-            groups.append({
-                "id": gid,
-                "title": chat.title or str(gid)
-            })
-
-        except Exception:
-            continue
-
-    return groups
+async def get_group_goodbye_photo(chat_id: int):
+    rows = await safe_db_execute(
+        "SELECT custom_goodbye_photo, goodbye_photo_pack FROM groups WHERE group_id=%s",
+        (chat_id,), fetch=True
+    )
+    if rows:
+        custom_photo = rows[0].get("custom_goodbye_photo")
+        if custom_photo:
+            return custom_photo
+        pack = rows[0].get("goodbye_photo_pack")
+        if pack and pack in GOODBYE_PHOTO_PACKS:
+            import random
+            return random.choice(GOODBYE_PHOTO_PACKS[pack])
+    return GOODBYE_IMAGE
 
 # ===============================
-# TEXT BUILDERS (SAFE)
+# TEXT BUILDERS
 # ===============================
 def build_welcome_text(chat, member, joined_time: str):
     group_title = escape(chat.title or "Group")
     if getattr(chat, "username", None):
-        group_link = f"https://t.me/{chat.username}"
-        group_title_link = f"<a href='{group_link}'>{group_title}</a>"
+        group_title_link = f"<a href='https://t.me/{chat.username}'>{group_title}</a>"
     else:
         group_title_link = group_title
 
@@ -1390,7 +977,6 @@ def build_welcome_text(chat, member, joined_time: str):
         f"⏰ Joined at: {escape(joined_time)}"
     )
 
-
 def build_goodbye_text(member, left_time: str):
     name = escape(member.first_name or "User")
     mention = f"<a href='tg://user?id={member.id}'>{name}</a>"
@@ -1402,63 +988,8 @@ def build_goodbye_text(member, left_time: str):
         f"⏰ Left at: {escape(left_time)}"
     )
 
-async def get_group_welcome_photo(chat_id: int):
-    rows = await safe_db_execute(
-        """
-        SELECT custom_welcome_photo, welcome_photo_pack
-        FROM groups
-        WHERE group_id=%s
-        """,
-        (chat_id,),
-        fetch=True
-    )
-
-    if rows:
-        custom_photo = rows[0].get("custom_welcome_photo")
-        if custom_photo:
-            return custom_photo
-        
-        pack = rows[0].get("welcome_photo_pack")
-
-        if pack and pack in WELCOME_PHOTO_PACKS:
-            photos = WELCOME_PHOTO_PACKS[pack]
-
-            if photos:
-                import random
-                return random.choice(photos)
-
-    return WELCOME_IMAGE
-
-
-async def get_group_goodbye_photo(chat_id: int):
-    rows = await safe_db_execute(
-        """
-        SELECT custom_goodbye_photo, goodbye_photo_pack
-        FROM groups
-        WHERE group_id=%s
-        """,
-        (chat_id,),
-        fetch=True
-    )
-
-    if rows:
-        custom_photo = rows[0].get("custom_goodbye_photo")
-        if custom_photo:
-            return custom_photo
-        
-        pack = rows[0].get("goodbye_photo_pack")
-
-        if pack and pack in GOODBYE_PHOTO_PACKS:
-            photos = GOODBYE_PHOTO_PACKS[pack]
-
-            if photos:
-                import random
-                return random.choice(photos)
-
-    return GOODBYE_IMAGE
-
 # ===============================
-# 👋 WELCOME (CHAT_MEMBER) - 100% reliable
+# 👋 WELCOME
 # ===============================
 async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1470,41 +1001,29 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
     new_status = cm.new_chat_member.status
     user = cm.new_chat_member.user
 
-    # ✅ Bot တိုင်း (မိမိ Bot အပါအဝင် အခြား Bot များ) welcome မလုပ်
     if user.is_bot:
         return
 
     JOIN_STATUSES = {"member", "restricted", "administrator"}
     LEFT_STATUSES = {"left", "kicked"}
 
-    # Rose-style full join detection
-    joined = (
-        old_status in LEFT_STATUSES
-        and new_status in JOIN_STATUSES
-    )
+    joined = (old_status in LEFT_STATUSES and new_status in JOIN_STATUSES)
 
-    # Ignore pure promotion (member → administrator)
     if old_status == "member" and new_status == "administrator":
         return
-
-    # Ignore restricted → member (mute remove)
     if old_status == "restricted" and new_status == "member":
         return
-
     if not joined:
         return
 
-    # ✅ Welcome အတွက် send permission ရရင်ပို့ (delete permission မလို)
     if not await can_bot_send(chat.id, context):
         return
 
-    # ✅ debounce duplicates (2-3 sec)  << IMPORTANT FIX
     now_ts = int(time.time())
     last_ts = LAST_WELCOME_TS.get((chat.id, user.id))
     if last_ts and (now_ts - last_ts) < 5:
         return
     LAST_WELCOME_TS[(chat.id, user.id)] = now_ts
-    # ✅ cross-debounce: stop fallback handler from sending again
     FALLBACK_EVENT_TS[(chat.id, user.id, "join")] = now_ts
 
     joined_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1512,10 +1031,8 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     bot_username = context.bot.username or ""
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
-            url=f"https://t.me/{bot_username}?startgroup=true"
-        )
+        InlineKeyboardButton("➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
+                             url=f"https://t.me/{bot_username}?startgroup=true")
     ]]) if bot_username else None
 
     try:
@@ -1524,33 +1041,29 @@ async def welcome_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE
             photo=await get_group_welcome_photo(chat.id),
             caption=text,
             parse_mode="HTML",
-            reply_markup=keyboard or None
+            reply_markup=keyboard
         )
         LAST_WELCOME[chat.id] = msg.message_id
         LAST_WELCOME_TS[(chat.id, user.id)] = int(time.time())
     except RetryAfter as e:
         await asyncio.sleep(getattr(e, "retry_after", 1))
         with contextlib.suppress(Exception):
-            msg = await context.bot.send_photo(
+            await context.bot.send_photo(
                 chat_id=chat.id,
                 photo=await get_group_welcome_photo(chat.id),
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=keyboard or None
+                caption=text, parse_mode="HTML", reply_markup=keyboard
             )
     except Forbidden:
         return
     except BadRequest:
-        # fallback text only
         with contextlib.suppress(Exception):
             await context.bot.send_message(chat.id, text, parse_mode="HTML")
     except Exception:
         with contextlib.suppress(Exception):
             await context.bot.send_message(chat.id, text, parse_mode="HTML")
 
-
 # ===============================
-# 👋 GOODBYE (CHAT_MEMBER) - 100% reliable
+# 👋 GOODBYE
 # ===============================
 async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -1562,26 +1075,19 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new = cm.new_chat_member
     user = cm.new_chat_member.user
 
-    # ✅ Bot တိုင်း (မိမိ Bot အပါအဝင် အခြား Bot များ) goodbye မလုပ်
     if user.is_bot:
         return
 
     ACTIVE_STATUSES = {"member", "restricted", "administrator"}
     LEFT_STATUSES = {"left", "kicked"}
 
-    left = (
-        old.status in ACTIVE_STATUSES
-        and new.status in LEFT_STATUSES
-    )
+    left = (old.status in ACTIVE_STATUSES and new.status in LEFT_STATUSES)
 
-    # Ignore demotion (administrator → member)
     if old.status == "administrator" and new.status == "member":
         return
-
     if not left:
         return
 
-    # Bot kicked ဖြစ်ရင် (chat access မရှိ) silent
     try:
         await context.bot.get_chat(chat.id)
     except Forbidden:
@@ -1589,17 +1095,14 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # ✅ Goodbye အတွက် send permission ရရင်ပို့ (delete permission မလို)
     if not await can_bot_send(chat.id, context):
         return
 
-    # ✅ debounce duplicates (2-3 sec)
     now_ts = int(time.time())
     last_ts = LAST_GOODBYE_TS.get((chat.id, user.id))
     if last_ts and (now_ts - last_ts) < 5:
         return
     LAST_GOODBYE_TS[(chat.id, user.id)] = now_ts
-    # ✅ cross-debounce: stop fallback handler from sending again
     FALLBACK_EVENT_TS[(chat.id, user.id, "left")] = now_ts
 
     left_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1607,19 +1110,15 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bot_username = context.bot.username or ""
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
-            url=f"https://t.me/{bot_username}?startgroup=true"
-        )
+        InlineKeyboardButton("➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣",
+                             url=f"https://t.me/{bot_username}?startgroup=true")
     ]]) if bot_username else None
 
     try:
         await context.bot.send_photo(
             chat_id=chat.id,
             photo=await get_group_goodbye_photo(chat.id),
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=keyboard or None
+            caption=text, parse_mode="HTML", reply_markup=keyboard
         )
     except RetryAfter as e:
         await asyncio.sleep(getattr(e, "retry_after", 1))
@@ -1627,9 +1126,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_photo(
                 chat_id=chat.id,
                 photo=await get_group_goodbye_photo(chat.id),
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=keyboard or None
+                caption=text, parse_mode="HTML", reply_markup=keyboard
             )
     except Forbidden:
         return
@@ -1641,7 +1138,7 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat.id, text, parse_mode="HTML")
 
 # ===============================
-# Fallback Debounce
+# Fallback
 # ===============================
 def _fallback_debounce(chat_id: int, user_id: int, kind: str) -> bool:
     now_ts = int(time.time())
@@ -1653,32 +1150,19 @@ def _fallback_debounce(chat_id: int, user_id: int, kind: str) -> bool:
     return False
 
 async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Fallback signals:
-    - message.new_chat_members (join)
-    - message.left_chat_member (leave)
-    ChatMemberHandler မလာတဲ့ group တွေအတွက် helper only.
-    """
     chat = update.effective_chat
     msg = update.effective_message
     if not chat or chat.type not in ("group", "supergroup") or not msg:
         return
-    # fallback လည်း send permission ရရင်ပို့ (welcome/goodbye only)
     if not await can_bot_send(chat.id, context):
         return
 
-    # JOIN
     new_members = getattr(msg, "new_chat_members", None) or []
     for m in new_members:
-        # ✅ Bot တိုင်း skip
         if m.is_bot:
             continue
-        
-        # ✅ fallback debounce
         if _fallback_debounce(chat.id, m.id, "join"):
-            continue    
-        
-        # ✅ if main handler already processed, skip
+            continue
         last_main = LAST_WELCOME_TS.get((chat.id, m.id))
         if last_main and (int(time.time()) - last_main < 5):
             continue
@@ -1688,11 +1172,9 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
             await context.bot.send_photo(
                 chat_id=chat.id,
                 photo=await get_group_welcome_photo(chat.id),
-                caption=text,
-                parse_mode="HTML"
+                caption=text, parse_mode="HTML"
             )
 
-    # LEAVE
     left_member = getattr(msg, "left_chat_member", None)
     if left_member and not left_member.is_bot:
         last_main = LAST_GOODBYE_TS.get((chat.id, left_member.id))
@@ -1705,22 +1187,19 @@ async def fallback_join_leave(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await context.bot.send_photo(
                     chat_id=chat.id,
                     photo=await get_group_goodbye_photo(chat.id),
-                    caption=text,
-                    parse_mode="HTML"
+                    caption=text, parse_mode="HTML"
                 )
 
 # ===============================
-# BROADCAST FAIL TRACKING (NON-ADMIN CLEANUP)
+# BROADCAST FAIL TRACKING
 # ===============================
 async def record_broadcast_result(chat_id: int, success: bool):
     rows = await safe_db_execute(
         "SELECT is_admin_cached, fail_count FROM groups WHERE group_id=%s",
-        (chat_id,),
-        fetch=True
+        (chat_id,), fetch=True
     )
     now = int(time.time())
 
-    # ✅ If group row doesn't exist, create it (align admin flag with RAM cache)
     if not rows:
         if success:
             is_admin = (chat_id in BOT_ADMIN_CACHE)
@@ -1728,13 +1207,11 @@ async def record_broadcast_result(chat_id: int, success: bool):
                 """
                 INSERT INTO groups (group_id, is_admin_cached, last_checked_at, fail_count, last_fail_at)
                 VALUES (%s, %s, %s, 0, NULL)
-                ON CONFLICT (group_id)
-                DO UPDATE SET last_checked_at = EXCLUDED.last_checked_at
+                ON CONFLICT (group_id) DO UPDATE SET last_checked_at = EXCLUDED.last_checked_at
                 """,
                 (chat_id, is_admin, now)
             )
             return
-        # fail: start fail_count at 1
         await safe_db_execute(
             """
             INSERT INTO groups (group_id, is_admin_cached, last_checked_at, fail_count, last_fail_at)
@@ -1753,13 +1230,9 @@ async def record_broadcast_result(chat_id: int, success: bool):
     fails = int(rows[0].get("fail_count") or 0)
 
     if success:
-        await safe_db_execute(
-            "UPDATE groups SET fail_count=0, last_fail_at=NULL WHERE group_id=%s",
-            (chat_id,)
-        )
+        await safe_db_execute("UPDATE groups SET fail_count=0, last_fail_at=NULL WHERE group_id=%s", (chat_id,))
         return
 
-    # only count fails for non-admin groups
     if not is_admin:
         fails += 1
         if fails >= 10:
@@ -1771,7 +1244,7 @@ async def record_broadcast_result(chat_id: int, success: bool):
         )
 
 # ===============================
-# BROADCAST SYSTEM
+# BROADCAST SYSTEM (✅ Improved from link-delete bot)
 # ===============================
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or update.effective_user.id != OWNER_ID:
@@ -1784,8 +1257,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not raw.startswith("/broadcast"):
         return
 
-    # mode decide
-    mode = "content"  # your current content-send mode (send_photo/send_video/etc)
+    mode = "content"
     if raw.startswith("/broadcast_fwd"):
         mode = "forward"
         raw = raw.replace("/broadcast_fwd", "", 1).strip()
@@ -1795,27 +1267,23 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         raw = raw.replace("/broadcast", "", 1).strip()
 
-    # for forward/copy: use replied message as source (important)
     src = msg.reply_to_message if msg.reply_to_message else msg
     content = {
         "mode": mode,
-        "text": raw,  # optional extra text/caption override
+        "text": raw,
         "photo": src.photo[-1].file_id if getattr(src, "photo", None) else None,
         "video": src.video.file_id if getattr(src, "video", None) else None,
         "audio": src.audio.file_id if getattr(src, "audio", None) else None,
         "document": src.document.file_id if getattr(src, "document", None) else None,
-        # for forward/copy
         "from_chat_id": src.chat.id,
         "message_id": src.message_id,
     }
 
-    # ✅ allow text-only OR media
     has_any_media = any([content["photo"], content["video"], content["audio"], content["document"]])
     has_text = bool(content["text"])
 
-    # forward/copy must have a replied message (otherwise it just forwards the command)
     if mode in ("forward", "copy") and not msg.reply_to_message:
-        await msg.reply_text("❌ /broadcast_fwd or /broadcast_copy ကို forward/copy လုပ်ချင်တဲ့ message ကို Reply ပြီး သုံးပါ။")
+        await msg.reply_text("❌ /broadcast_fwd or /broadcast_copy ကို Reply ပြီး သုံးပါ။")
         return
 
     if not (has_text or has_any_media or mode in ("forward", "copy")):
@@ -1828,11 +1296,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("✅ CONFIRM", callback_data="broadcast_confirm"),
         InlineKeyboardButton("❌ CANCEL", callback_data="broadcast_cancel")
     ]])
-    await msg.reply_text(
-        "📢 <b>Broadcast Confirm လုပ်ပါ</b>",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
+    await msg.reply_text("📢 <b>Broadcast Confirm လုပ်ပါ</b>", parse_mode="HTML", reply_markup=keyboard)
 
 async def broadcast_confirm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1852,12 +1316,220 @@ async def broadcast_confirm_handler(update: Update, context: ContextTypes.DEFAUL
         [InlineKeyboardButton("👥👤 Users + Groups", callback_data="bc_target_all")],
         [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
     ])
+    await query.edit_message_text("📢 <b>Broadcast Target ကိုရွေးပါ</b>", parse_mode="HTML", reply_markup=keyboard)
 
-    await query.edit_message_text(
-        "📢 <b>Broadcast Target ကိုရွေးပါ</b>",
+async def broadcast_target_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if OWNER_ID not in PENDING_BROADCAST:
+        await query.edit_message_text("❌ Broadcast data မရှိပါ")
+        return
+
+    target_type = query.data
+    PENDING_TARGET[OWNER_ID] = target_type
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Post Now", callback_data="bc_post_now")],
+        [InlineKeyboardButton("➕ Auto Add Button", callback_data="bc_btn_auto")],
+        [InlineKeyboardButton("🔗 Manual Button URL", callback_data="bc_btn_manual")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
+    ])
+    await query.edit_message_text("📢 <b>Post Option ကိုရွေးပါ</b>", parse_mode="HTML", reply_markup=keyboard)
+
+async def broadcast_post_now_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    data = PENDING_BROADCAST.pop(OWNER_ID, None)
+    target_type = PENDING_TARGET.pop(OWNER_ID, None)
+    PENDING_BUTTON_WAIT.pop(OWNER_ID, None)
+
+    if not data or not target_type:
+        await query.edit_message_text("❌ Broadcast data မရှိပါ")
+        return
+
+    PENDING_PREVIEW[OWNER_ID] = {"data": data, "target": target_type, "button_url": None}
+    await show_preview(update, context)
+
+async def broadcast_auto_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if OWNER_ID not in PENDING_BROADCAST or OWNER_ID not in PENDING_TARGET:
+        await query.edit_message_text("❌ Broadcast data မရှိပါ")
+        return
+
+    bot_username = context.bot.username or ""
+    if not bot_username:
+        await query.edit_message_text("❌ Bot username မရှိလို့ Auto button မလုပ်နိုင်ပါ")
+        return
+
+    url = f"https://t.me/{bot_username}?startgroup=true"
+    data = PENDING_BROADCAST.pop(OWNER_ID, None)
+    target_type = PENDING_TARGET.pop(OWNER_ID, None)
+    PENDING_BUTTON_WAIT.pop(OWNER_ID, None)
+
+    if not data or not target_type:
+        await query.edit_message_text("❌ Broadcast data မရှိပါ")
+        return
+
+    PENDING_PREVIEW[OWNER_ID] = {"data": data, "target": target_type, "button_url": url}
+    await show_preview(update, context)
+
+async def broadcast_manual_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    if OWNER_ID not in PENDING_BROADCAST or OWNER_ID not in PENDING_TARGET:
+        await query.edit_message_text("❌ Broadcast data မရှိပါ")
+        return
+
+    PENDING_BUTTON_WAIT[OWNER_ID] = True
+    await query.edit_message_text("🔗 Button URL ကို ပို့ပါ\n\nExample:\nhttps://t.me/YourBot")
+
+async def broadcast_button_url_receiver(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or user.id != OWNER_ID or not msg:
+        return
+    if OWNER_ID not in PENDING_BUTTON_WAIT:
+        return
+
+    url = (msg.text or "").strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        await msg.reply_text("❌ Invalid URL (http/https) ပဲထည့်ပါ")
+        return
+
+    PENDING_BUTTON_WAIT.pop(OWNER_ID, None)
+    data = PENDING_BROADCAST.pop(OWNER_ID, None)
+    target_type = PENDING_TARGET.pop(OWNER_ID, None)
+
+    if not data or not target_type:
+        await msg.reply_text("❌ Broadcast data မရှိပါ")
+        return
+
+    PENDING_PREVIEW[OWNER_ID] = {"data": data, "target": target_type, "button_url": url}
+    await show_preview(update, context)
+
+async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = query.message.chat.id if query else update.effective_chat.id
+
+    preview = PENDING_PREVIEW.get(OWNER_ID)
+    if not preview:
+        return
+
+    data = dict(preview["data"])
+    data["button_url"] = preview["button_url"]
+    await send_content(context, chat_id, data)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ SEND", callback_data="bc_preview_send"),
+        InlineKeyboardButton("❌ CANCEL", callback_data="bc_preview_cancel"),
+    ]])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="🔍 <b>Preview</b>\n\nဒီပုံစံနဲ့ Broadcast ပို့မယ်",
         parse_mode="HTML",
         reply_markup=keyboard
     )
+
+async def broadcast_preview_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    preview = PENDING_PREVIEW.pop(OWNER_ID, None)
+    if not preview:
+        await query.edit_message_text("❌ Broadcast data မရှိပါ")
+        return
+
+    data = preview["data"]
+    target_type = preview["target"]
+    button_url = preview["button_url"]
+
+    progress_msg = await query.edit_message_text(
+        "📢 <b>Broadcasting...</b>\n\n⏳ Progress: 0%", parse_mode="HTML"
+    )
+    await run_broadcast(context, data, target_type, progress_msg, button_url=button_url)
+
+async def broadcast_preview_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    PENDING_PREVIEW.pop(OWNER_ID, None)
+    PENDING_BROADCAST.pop(OWNER_ID, None)
+    PENDING_TARGET.pop(OWNER_ID, None)
+    PENDING_BUTTON_WAIT.pop(OWNER_ID, None)
+    await context.bot.send_message(chat_id=query.message.chat.id, text="❌ Broadcast Cancel လုပ်လိုက်ပါပြီ")
+
+async def run_broadcast(context, data, target_type, progress_msg, button_url=None):
+    if pool is None or not DB_READY:
+        try:
+            await progress_msg.edit_text(
+                "❌ <b>Broadcast မလုပ်နိုင်ပါ</b>\n\n⚠️ <b>DB unavailable</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+
+    sent = 0
+    attempted = 0
+    start_time = time.time()
+    total = 0
+
+    if target_type in ("bc_target_users", "bc_target_all"):
+        rows = await safe_db_execute("SELECT COUNT(*) AS c FROM users", fetch=True)
+        total += int(rows[0]["c"]) if rows else 0
+    if target_type in ("bc_target_groups", "bc_target_all"):
+        rows = await safe_db_execute("SELECT COUNT(*) AS c FROM groups", fetch=True)
+        total += int(rows[0]["c"]) if rows else 0
+
+    async def send_one(cid, is_group):
+        nonlocal sent, attempted
+        tmp = dict(data)
+        tmp["button_url"] = button_url
+        res = await safe_send(send_content, context, cid, tmp)
+        attempted += 1
+        if res:
+            sent += 1
+            if is_group:
+                context.application.create_task(record_broadcast_result(cid, True))
+        else:
+            if is_group:
+                context.application.create_task(record_broadcast_result(cid, False))
+        if attempted % 50 == 0 or attempted == total:
+            await update_progress(progress_msg, attempted, total)
+
+    if target_type in ("bc_target_users", "bc_target_all"):
+        async for rows in iter_db_ids("SELECT user_id FROM users ORDER BY user_id"):
+            for r in rows:
+                await send_one(int(r["user_id"]), False)
+
+    if target_type in ("bc_target_groups", "bc_target_all"):
+        async for rows in iter_db_ids("SELECT group_id FROM groups ORDER BY group_id"):
+            for r in rows:
+                await send_one(int(r["group_id"]), True)
+
+    elapsed = int(time.time() - start_time)
+    try:
+        await progress_msg.edit_text(
+            "✅ <b>Broadcast Completed</b>\n\n"
+            f"📨 Sent: <b>{sent}</b>\n"
+            f"📦 Attempted: <b>{attempted}</b>\n"
+            f"⏱️ Time: <b>{elapsed // 60}m {elapsed % 60}s</b>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
 async def safe_send(func, *args, **kwargs):
     for _ in range(5):
@@ -1868,43 +1540,31 @@ async def safe_send(func, *args, **kwargs):
                 ctx = args[0]
                 old_chat_id = args[1]
                 new_chat_id = e.new_chat_id
-
-                # -------- RAM migrate (important for consistency) --------
+                ADMIN_VERIFY_CACHE.pop(old_chat_id, None)
+                ADMIN_VERIFY_CACHE.pop(new_chat_id, None)
                 if old_chat_id in BOT_ADMIN_CACHE:
                     BOT_ADMIN_CACHE.discard(old_chat_id)
                     BOT_ADMIN_CACHE.add(new_chat_id)
                 USER_ADMIN_CACHE[new_chat_id] = USER_ADMIN_CACHE.pop(old_chat_id, set())
                 REMINDER_MESSAGES[new_chat_id] = REMINDER_MESSAGES.pop(old_chat_id, [])
-
-                # admin verify throttle: allow fresh checks on new id
-                ADMIN_VERIFY_CACHE.pop(old_chat_id, None)
-                ADMIN_VERIFY_CACHE.pop(new_chat_id, None)
-
                 try:
-                    me = await ctx.bot.get_chat_member(new_chat_id, ctx.bot.id)   
+                    me = await ctx.bot.get_chat_member(new_chat_id, ctx.bot.id)
                     is_admin = me.status in ("administrator", "creator") and getattr(me, "can_delete_messages", False)
                 except Exception:
                     is_admin = False
-                
                 ctx.application.create_task(
                     safe_db_execute(
                         """
                         INSERT INTO groups (group_id, is_admin_cached, last_checked_at)
                         VALUES (%s, %s, %s)
                         ON CONFLICT (group_id)
-                        DO UPDATE SET
-                          is_admin_cached = EXCLUDED.is_admin_cached,
-                          last_checked_at = EXCLUDED.last_checked_at
+                        DO UPDATE SET is_admin_cached = EXCLUDED.is_admin_cached, last_checked_at = EXCLUDED.last_checked_at
                         """,
                         (new_chat_id, is_admin, int(time.time()))
                     )
                 )
-                ctx.application.create_task(
-                    safe_db_execute("DELETE FROM groups WHERE group_id=%s", (old_chat_id,))
-                )
-                
-                new_args = (args[0], new_chat_id, *args[2:])
-                args = new_args
+                ctx.application.create_task(safe_db_execute("DELETE FROM groups WHERE group_id=%s", (old_chat_id,)))
+                args = (args[0], new_chat_id, *args[2:])
                 continue
             except Exception:
                 return None
@@ -1913,88 +1573,6 @@ async def safe_send(func, *args, **kwargs):
         except (Forbidden, BadRequest):
             return None
     return None
-
-async def broadcast_target_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    # If DB is unavailable, broadcasting to saved users/groups cannot work
-    if not DB_READY or pool is None:
-        PENDING_BROADCAST.pop(OWNER_ID, None)
-        await query.edit_message_text("⚠️ DB unavailable — Broadcast မလုပ်နိုင်ပါ (DB down)")
-        return
-
-    data = PENDING_BROADCAST.pop(OWNER_ID, None)
-    if not data:
-        await query.edit_message_text("❌ Broadcast data မရှိပါ")
-        return
-
-    target_type = query.data
-    progress_msg = await query.edit_message_text(
-        "📢 <b>Broadcasting...</b>\n\n⏳ Progress: 0%",
-        parse_mode="HTML"
-    )
-
-    sent = 0
-    attempted = 0
-    start_time = time.time()
-
-    total = 0
-    if target_type in ("bc_target_users", "bc_target_all"):
-        rows = await safe_db_execute("SELECT COUNT(*) AS c FROM users", fetch=True)
-        total += int(rows[0]["c"]) if rows else 0
-    if target_type in ("bc_target_groups", "bc_target_all"):
-        # ✅ include non-admin groups too
-        rows = await safe_db_execute("SELECT COUNT(*) AS c FROM groups", fetch=True)
-        total += int(rows[0]["c"]) if rows else 0
-
-    async def send_batch(ids, is_group: bool):
-        nonlocal sent, attempted
-        for cid in ids:
-            if is_group:
-                # Ensure group row exists (so fail_count tracking always works)
-                context.application.create_task(
-                    safe_db_execute(
-                        """
-                        INSERT INTO groups (group_id, is_admin_cached, last_checked_at, fail_count, last_fail_at)
-                        VALUES (%s, %s, %s, 0, NULL)
-                        ON CONFLICT (group_id) DO NOTHING
-                        """,
-                        (cid, cid in BOT_ADMIN_CACHE, int(time.time()))
-                    )
-                )
-            res = await safe_send(send_content, context, cid, data)
-            attempted += 1
-            if res:
-                sent += 1
-                if is_group:
-                    context.application.create_task(record_broadcast_result(cid, True))
-            else:
-                if is_group:           
-                    context.application.create_task(record_broadcast_result(cid, False)) 
-            
-            if attempted % 50 == 0 or attempted == total:
-                await update_progress(progress_msg, attempted, total)
-
-    if target_type in ("bc_target_users", "bc_target_all"):
-        async for rows in iter_db_ids("SELECT user_id FROM users ORDER BY user_id"):
-            await send_batch([r["user_id"] for r in rows], is_group=False)
-
-    if target_type in ("bc_target_groups", "bc_target_all"):
-        async for rows in iter_db_ids(
-            # ✅ include non-admin groups too
-            "SELECT group_id FROM groups ORDER BY group_id"
-        ):
-            await send_batch([r["group_id"] for r in rows], is_group=True)
-
-    elapsed = int(time.time() - start_time)
-    await progress_msg.edit_text(
-        "✅ <b>Broadcast Completed</b>\n\n"
-        f"📨 Sent: <b>{sent}</b>\n"
-        f"📦 Attempted: <b>{attempted}</b>\n"
-        f"⏱️ Time: <b>{elapsed // 60}m {elapsed % 60}s</b>",
-        parse_mode="HTML"
-    )
 
 async def broadcast_cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2005,101 +1583,108 @@ async def broadcast_cancel_handler(update: Update, context: ContextTypes.DEFAULT
         return
     await query.answer()
     PENDING_BROADCAST.pop(OWNER_ID, None)
+    PENDING_TARGET.pop(OWNER_ID, None)
+    PENDING_BUTTON_WAIT.pop(OWNER_ID, None)
     await query.edit_message_text("❌ Broadcast Cancel လုပ်လိုက်ပါပြီ")
 
 async def send_content(context, chat_id, data):
     mode = data.get("mode", "content")
+    button_url = (data.get("button_url") or "").strip()
+    reply_markup = None
+    if button_url:
+        reply_markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣", url=button_url)
+        ]])
 
-    # 1) forward/copy mode
     if mode in ("forward", "copy"):
         from_chat_id = data.get("from_chat_id")
         message_id = data.get("message_id")
         if not from_chat_id or not message_id:
             return None
         try:
-            override_raw = (data.get("text") or "").strip() 
-            override_text = escape(override_raw) if override_raw else ""
-            
+            override_text = (data.get("text") or "").strip()
             if mode == "forward":
                 res = await context.bot.forward_message(
-                    chat_id=chat_id,
-                    from_chat_id=from_chat_id,
-                    message_id=message_id
+                    chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id
                 )
-            
-                # Optional: allow extra text with forward by sending a follow-up message
                 if override_text:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=override_text,
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        pass
+                    with contextlib.suppress(Exception):
+                        await context.bot.send_message(chat_id=chat_id, text=override_text, parse_mode="HTML")
+                if reply_markup:
+                    with contextlib.suppress(Exception):
+                        await context.bot.send_message(chat_id=chat_id, text="🔗", reply_markup=reply_markup)
                 return res
             else:
-                # IMPORTANT:
-                # - caption only works for media messages
-                # - text-only messages cannot accept caption (BadRequest)
                 if override_text:
-                    # safest: send override text first, then copy original message as-is
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=override_text,
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        pass
-                return await context.bot.copy_message(
-                    chat_id=chat_id,
-                    from_chat_id=from_chat_id,
-                    message_id=message_id
+                    with contextlib.suppress(Exception):
+                        await context.bot.send_message(chat_id=chat_id, text=override_text, parse_mode="HTML")
+                res = await context.bot.copy_message(
+                    chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id
                 )
-        
+                if reply_markup:
+                    with contextlib.suppress(Exception):
+                        await context.bot.send_message(chat_id=chat_id, text="🔗", reply_markup=reply_markup)
+                return res
         except (Forbidden, BadRequest):
             return None
         except Exception:
             return None
 
-    # 2) your existing "content" mode (send_photo/send_video/etc)
-    text = escape(data.get("text") or "")
+    text = (data.get("text") or "").strip()
     try:
         if data.get("photo"):
-            return await context.bot.send_photo(
-                chat_id=chat_id,
-                photo=data["photo"],
-                caption=text if text else None,
-                parse_mode="HTML"
-            )
+            try:
+                return await context.bot.send_photo(
+                    chat_id=chat_id, photo=data["photo"],
+                    caption=text or None, parse_mode="HTML", reply_markup=reply_markup
+                )
+            except BadRequest:
+                return await context.bot.send_photo(
+                    chat_id=chat_id, photo=data["photo"],
+                    caption=text or None, reply_markup=reply_markup
+                )
         if data.get("video"):
-            return await context.bot.send_video(
-                chat_id=chat_id,
-                video=data["video"],
-                caption=text if text else None,
-                parse_mode="HTML"
-            )
+            try:
+                return await context.bot.send_video(
+                    chat_id=chat_id, video=data["video"],
+                    caption=text or None, parse_mode="HTML", reply_markup=reply_markup
+                )
+            except BadRequest:
+                return await context.bot.send_video(
+                    chat_id=chat_id, video=data["video"],
+                    caption=text or None, reply_markup=reply_markup
+                )
         if data.get("audio"):
-            return await context.bot.send_audio(
-                chat_id=chat_id,
-                audio=data["audio"],
-                caption=text if text else None,
-                parse_mode="HTML"
-            )
+            try:
+                return await context.bot.send_audio(
+                    chat_id=chat_id, audio=data["audio"],
+                    caption=text or None, parse_mode="HTML", reply_markup=reply_markup
+                )
+            except BadRequest:
+                return await context.bot.send_audio(
+                    chat_id=chat_id, audio=data["audio"],
+                    caption=text or None, reply_markup=reply_markup
+                )
         if data.get("document"):
-            return await context.bot.send_document(
-                chat_id=chat_id,
-                document=data["document"],
-                caption=text if text else None,
-                parse_mode="HTML"
-            )
+            try:
+                return await context.bot.send_document(
+                    chat_id=chat_id, document=data["document"],
+                    caption=text or None, parse_mode="HTML", reply_markup=reply_markup
+                )
+            except BadRequest:
+                return await context.bot.send_document(
+                    chat_id=chat_id, document=data["document"],
+                    caption=text or None, reply_markup=reply_markup
+                )
         if text:
-            return await context.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode="HTML"
-            )
+            try:
+                return await context.bot.send_message(
+                    chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=reply_markup
+                )
+            except BadRequest:
+                return await context.bot.send_message(
+                    chat_id=chat_id, text=text, reply_markup=reply_markup
+                )
     except (Forbidden, BadRequest):
         return None
     except Exception:
@@ -2117,7 +1702,7 @@ async def leave_if_not_admin(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         me = await context.bot.get_chat_member(chat_id, context.bot.id)
-        if me.status in ("administrator", "creator"):
+        if me.status in ("administrator", "creator") and getattr(me, "can_delete_messages", False):
             BOT_ADMIN_CACHE.add(chat_id)
             return
     except:
@@ -2129,12 +1714,7 @@ async def leave_if_not_admin(context: ContextTypes.DEFAULT_TYPE):
 
     context.application.create_task(
         safe_db_execute(
-            """
-            UPDATE groups
-            SET is_admin_cached = FALSE,
-                last_checked_at = %s
-            WHERE group_id = %s
-            """,
+            "UPDATE groups SET is_admin_cached = FALSE, last_checked_at = %s WHERE group_id = %s",
             (int(time.time()), chat_id)
         )
     )
@@ -2151,6 +1731,9 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     USER_ADMIN_CACHE.pop(chat.id, None)
+    # ✅ From link-delete bot: clear verify throttle immediately
+    ADMIN_VERIFY_CACHE.pop(chat.id, None)
+
     old = update.my_chat_member.old_chat_member
     new = update.my_chat_member.new_chat_member
     if not old or not new:
@@ -2164,9 +1747,8 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             BOT_ADMIN_CACHE.add(chat.id)
         else:
             BOT_ADMIN_CACHE.discard(chat.id)
-        
-        clear_reminders(context, chat.id)
 
+        clear_reminders(context, chat.id)
         for mid in REMINDER_MESSAGES.pop(chat.id, []):
             with contextlib.suppress(Exception):
                 await context.bot.delete_message(chat.id, mid)
@@ -2179,7 +1761,9 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ON CONFLICT (group_id)
                 DO UPDATE SET
                     is_admin_cached = EXCLUDED.is_admin_cached,
-                    last_checked_at = EXCLUDED.last_checked_at
+                    last_checked_at = EXCLUDED.last_checked_at,
+                    fail_count = 0,
+                    last_fail_at = NULL
                 """,
                 (chat.id, is_ok, int(time.time()))
             )
@@ -2192,7 +1776,7 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🤖 <b>Bot</b> ကို <b>Admin</b> အဖြစ် ခန့်ထားပြီးပါပြီး။\n\n"
                 "🐇 <b>Welcome Message</b>\n"
                 "🐇 <b>Goodbye Message</b>\n\n"
-                "✅  စတင်အလုပ်လုပ်နေပါပြီး.........!",
+                "✅ စတင်အလုပ်လုပ်နေပါပြီး.........!",
                 parse_mode="HTML"
             )
         except:
@@ -2215,11 +1799,11 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         BOT_ADMIN_CACHE.discard(chat.id)
         clear_reminders(context, chat.id)
         try:
-            me = await context.bot.get_me()
+            bot_username = context.bot.username or ""
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton(
                     "⭐ 𝗚𝗜𝗩𝗘 𝗔𝗗𝗠𝗜𝗡 𝗣𝗘𝗥𝗠𝗜𝗦𝗦𝗜𝗢𝗡",
-                    url=f"https://t.me/{me.username}?startgroup=true"
+                    url=f"https://t.me/{bot_username}?startgroup=true"
                 )
             ]])
             m = await context.bot.send_message(
@@ -2268,17 +1852,18 @@ async def admin_reminder(context: ContextTypes.DEFAULT_TYPE):
         REMINDER_MESSAGES.pop(chat_id, None)
         return
 
-    if me.status in ("administrator", "creator"):
+    # ✅ From link-delete bot: check can_delete_messages too
+    if me.status in ("administrator", "creator") and getattr(me, "can_delete_messages", False):
         BOT_ADMIN_CACHE.add(chat_id)
         clear_reminders(context, chat_id)
         return
 
     try:
-        bot = await context.bot.get_me()
+        bot_username = context.bot.username or ""
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 "⭐ 𝗚𝗜𝗩𝗘 𝗔𝗗𝗠𝗜𝗡 𝗣𝗘𝗥𝗠𝗜𝗦𝗦𝗜𝗢𝗡",
-                url=f"https://t.me/{bot.username}?startgroup=true"
+                url=f"https://t.me/{bot_username}?startgroup=true"
             )
         ]])
         m = await context.bot.send_message(
@@ -2297,37 +1882,23 @@ async def admin_reminder(context: ContextTypes.DEFAULT_TYPE):
         REMINDER_MESSAGES.pop(chat_id, None)
 
 # ===============================
-# PHOTO PACK MENU
+# PHOTO PACK COMMANDS (Group)
 # ===============================
 async def packs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.effective_message
-
     if not chat or not user or not msg:
         return
-
     if chat.type != "private":
         return
-
     groups = await get_user_admin_groups(user.id, context)
-
     if not groups:
-        await msg.reply_text(
-            "❌ Admin / Owner ဖြစ်တဲ့ Group မတွေ့ပါ"
-        )
+        await msg.reply_text("❌ Admin / Owner ဖြစ်တဲ့ Group မတွေ့ပါ")
         return
-
     buttons = []
-
     for g in groups:
-        buttons.append([
-            InlineKeyboardButton(
-                g["title"][:50],
-                callback_data=f"pack_group_{g['id']}"
-            )
-        ])
-
+        buttons.append([InlineKeyboardButton(g["title"][:50], callback_data=f"pack_group_{g['id']}")])
     await msg.reply_text(
         "🎨 Welcome / Goodbye Photo Pack သတ်မှတ်မယ့် Group ကိုရွေးပါ။",
         reply_markup=InlineKeyboardMarkup(buttons)
@@ -2335,94 +1906,51 @@ async def packs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def pack_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
     if not query or not query.data:
         return
-
     await query.answer()
-
     user = update.effective_user
-
     try:
         chat_id = int(query.data.split("_")[-1])
     except:
         return
-
-    # security check
     try:
         member = await context.bot.get_chat_member(chat_id, user.id)
-
         if member.status not in ("administrator", "creator"):
-            await query.answer(
-                "❌ You are not admin",
-                show_alert=True
-            )
+            await query.answer("❌ You are not admin", show_alert=True)
             return
-
     except Exception:
         return
-
     buttons = []
-
     for pack_name in WELCOME_PHOTO_PACKS.keys():
-        buttons.append([
-            InlineKeyboardButton(
-                f"🎨 {pack_name.upper()}",
-                callback_data=f"setpack_{chat_id}_{pack_name}"
-            )
-        ])
-
+        buttons.append([InlineKeyboardButton(f"🎨 {pack_name.upper()}", callback_data=f"setpack_{chat_id}_{pack_name}")])
     with contextlib.suppress(BadRequest):
-        await query.edit_message_text(
-            "🖼 Welcome / Goodbye Photo Pack ကိုရွေးပါ။",
-            reply_markup=InlineKeyboardMarkup(buttons)
-    )
+        await query.edit_message_text("🖼 Welcome / Goodbye Photo Pack ကိုရွေးပါ။", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def set_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
     if not query or not query.data:
         return
-
     await query.answer()
-
     user = update.effective_user
-
     try:
-        prefix, rest = query.data.split("_", 1)
+        _, rest = query.data.split("_", 1)
         chat_id, pack_name = rest.split("_", 1)
         chat_id = int(chat_id)
     except:
         return
-
-    # security check
     try:
         member = await context.bot.get_chat_member(chat_id, user.id)
-
         if member.status not in ("administrator", "creator"):
-            await query.answer(
-                "❌ You are not admin",
-                show_alert=True
-            )
+            await query.answer("❌ You are not admin", show_alert=True)
             return
-
     except Exception:
         return
-
-    # invalid pack
     if pack_name not in WELCOME_PHOTO_PACKS:
         return
-
-    await set_group_photo_pack(
-        chat_id,
-        welcome_pack=pack_name,
-        goodbye_pack=pack_name
-    )
-
+    await set_group_photo_pack(chat_id, welcome_pack=pack_name, goodbye_pack=pack_name)
     await query.edit_message_text(
-        f"✅ Photo Pack set completed.\n\n"
-        f"🏷 Pack: {pack_name.upper()}\n"
-        f"🆔 Group ID: <code>{chat_id}</code>",
+        f"✅ Photo Pack set completed.\n\n🏷 Pack: {pack_name.upper()}\n🆔 Group ID: <code>{chat_id}</code>",
         parse_mode="HTML"
     )
 
@@ -2430,153 +1958,62 @@ async def set_welcome_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.effective_message
-
     if not chat or chat.type not in ("group", "supergroup"):
         return
-
     if not user or not await is_user_admin(chat.id, user.id, context):
         return
-
     buttons = []
-
     for pack_name in WELCOME_PHOTO_PACKS.keys():
-        buttons.append([
-            InlineKeyboardButton(
-                f"📸 {pack_name.title()}",
-                callback_data=f"set_welcome_pack:{chat.id}:{pack_name}"
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "♻️ Default",
-            callback_data=f"set_welcome_pack:{chat.id}:default"
-        )
-    ])
-
-    await msg.reply_text(
-        "🖼 <b>Choose Welcome Photo Pack</b>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
+        buttons.append([InlineKeyboardButton(f"📸 {pack_name.title()}", callback_data=f"set_welcome_pack:{chat.id}:{pack_name}")])
+    buttons.append([InlineKeyboardButton("♻️ Default", callback_data=f"set_welcome_pack:{chat.id}:default")])
+    await msg.reply_text("🖼 <b>Choose Welcome Photo Pack</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def set_goodbye_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     msg = update.effective_message
-
     if not chat or chat.type not in ("group", "supergroup"):
         return
-
     if not user or not await is_user_admin(chat.id, user.id, context):
         return
-
     buttons = []
-
     for pack_name in GOODBYE_PHOTO_PACKS.keys():
-        buttons.append([
-            InlineKeyboardButton(
-                f"📸 {pack_name.title()}",
-                callback_data=f"set_goodbye_pack:{chat.id}:{pack_name}"
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            "♻️ Default",
-            callback_data=f"set_goodbye_pack:{chat.id}:default"
-        )
-    ])
-
-    await msg.reply_text(
-        "🖼 <b>Choose Goodbye Photo Pack</b>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+        buttons.append([InlineKeyboardButton(f"📸 {pack_name.title()}", callback_data=f"set_goodbye_pack:{chat.id}:{pack_name}")])
+    buttons.append([InlineKeyboardButton("♻️ Default", callback_data=f"set_goodbye_pack:{chat.id}:default")])
+    await msg.reply_text("🖼 <b>Choose Goodbye Photo Pack</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def photo_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
     if not query or not query.data:
         return
-
     user = update.effective_user
-
     await query.answer()
-
     data = query.data
-
     try:
         action, chat_id, pack_name = data.split(":")
         chat_id = int(chat_id)
     except:
         return
-
     if not user or not await is_user_admin(chat_id, user.id, context):
         await query.answer("❌ You are not admin", show_alert=True)
         return
 
     if action == "set_welcome_pack":
-
         if pack_name == "default":
-            await safe_db_execute(
-                """
-                UPDATE groups
-                SET welcome_photo_pack=NULL, custom_welcome_photo=NULL
-                WHERE group_id=%s
-                """,
-                (chat_id,)
-            )
-
-            await query.edit_message_text(
-                "♻️ Welcome photo reset to default"
-            )
+            await safe_db_execute("UPDATE groups SET welcome_photo_pack=NULL, custom_welcome_photo=NULL WHERE group_id=%s", (chat_id,))
+            await query.edit_message_text("♻️ Welcome photo reset to default")
             return
-
-        await safe_db_execute(
-            """
-            UPDATE groups
-            SET welcome_photo_pack=%s, custom_welcome_photo=NULL
-            WHERE group_id=%s
-            """,
-            (pack_name, chat_id)
-        )
-
-        await query.edit_message_text(
-            f"✅ Welcome pack set to: {pack_name}"
-        )
+        await safe_db_execute("UPDATE groups SET welcome_photo_pack=%s, custom_welcome_photo=NULL WHERE group_id=%s", (pack_name, chat_id))
+        await query.edit_message_text(f"✅ Welcome pack set to: {pack_name}")
         return
 
     if action == "set_goodbye_pack":
-
         if pack_name == "default":
-            await safe_db_execute(
-                """
-                UPDATE groups
-                SET goodbye_photo_pack=NULL, custom_goodbye_photo=NULL
-                WHERE group_id=%s
-                """,
-                (chat_id,)
-            )
-
-            await query.edit_message_text(
-                "♻️ Goodbye photo reset to default"
-            )
+            await safe_db_execute("UPDATE groups SET goodbye_photo_pack=NULL, custom_goodbye_photo=NULL WHERE group_id=%s", (chat_id,))
+            await query.edit_message_text("♻️ Goodbye photo reset to default")
             return
-
-        await safe_db_execute(
-            """
-            UPDATE groups
-            SET goodbye_photo_pack=%s, custom_goodbye_photo=NULL
-            WHERE group_id=%s
-            """,
-            (pack_name, chat_id)
-        )
-
-        await query.edit_message_text(
-            f"✅ Goodbye pack set to: {pack_name}"
-        )
+        await safe_db_execute("UPDATE groups SET goodbye_photo_pack=%s, custom_goodbye_photo=NULL WHERE group_id=%s", (pack_name, chat_id))
+        await query.edit_message_text(f"✅ Goodbye pack set to: {pack_name}")
 
 # ===============================
 # GROUP COMMANDS
@@ -2591,13 +2028,12 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = chat.id
-    user_id = user.id
-
-    if not await is_user_admin(chat_id, user_id, context):
+    if not await is_user_admin(chat_id, user.id, context):
         return
 
     BOT_ADMIN_CACHE.discard(chat_id)
     USER_ADMIN_CACHE.pop(chat_id, None)
+    ADMIN_VERIFY_CACHE.pop(chat_id, None)
 
     try:
         me = await context.bot.get_chat_member(chat_id, context.bot.id)
@@ -2609,9 +2045,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     INSERT INTO groups (group_id, is_admin_cached, last_checked_at)
                     VALUES (%s, TRUE, %s)
                     ON CONFLICT (group_id)
-                    DO UPDATE SET
-                      is_admin_cached = TRUE,
-                      last_checked_at = EXCLUDED.last_checked_at
+                    DO UPDATE SET is_admin_cached = TRUE, last_checked_at = EXCLUDED.last_checked_at
                     """,
                     (chat_id, int(time.time()))
                 )
@@ -2619,8 +2053,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await msg.reply_text(
                 "⚠️ <b>Bot မှာ Delete permission မရှိပါ</b>\n\n"
-                "🔧 Admin setting ထဲမှာ\n"
-                "✅ <b>Delete Messages</b> ကို ဖွင့်ပေးပါ",
+                "🔧 Admin setting ထဲမှာ ✅ <b>Delete Messages</b> ကို ဖွင့်ပေးပါ",
                 parse_mode="HTML"
             )
             return
@@ -2628,9 +2061,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await msg.reply_text(
-        "🔄 <b>Refresh completed!</b>\n\n"
-        "✅ Admin cache updated\n"
-        "✅ Bot permission re-checked",
+        "🔄 <b>Refresh completed!</b>\n\n✅ Admin cache updated\n✅ Bot permission re-checked",
         parse_mode="HTML"
     )
 
@@ -2638,11 +2069,7 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # STARTUP HELPERS
 # ===============================
 async def refresh_admin_cache(app):
-    rows = await safe_db_execute(
-        "SELECT group_id FROM groups WHERE is_admin_cached = TRUE",
-        fetch=True
-    ) or []
-
+    rows = await safe_db_execute("SELECT group_id FROM groups WHERE is_admin_cached = TRUE", fetch=True) or []
     BOT_ADMIN_CACHE.clear()
     verified = 0
     skipped = 0
@@ -2655,79 +2082,41 @@ async def refresh_admin_cache(app):
             if me.status in ("administrator", "creator") and getattr(me, "can_delete_messages", False):
                 BOT_ADMIN_CACHE.add(gid)
                 verified += 1
-                await safe_db_execute(
-                    """
-                    UPDATE groups
-                    SET is_admin_cached = TRUE,
-                        last_checked_at = %s
-                    WHERE group_id = %s
-                    """,
-                    (now, gid)
-                )
+                await safe_db_execute("UPDATE groups SET is_admin_cached = TRUE, last_checked_at = %s WHERE group_id = %s", (now, gid))
             else:
                 skipped += 1
-                await safe_db_execute(
-                    """
-                    UPDATE groups
-                    SET is_admin_cached = FALSE,
-                        last_checked_at = %s
-                    WHERE group_id = %s
-                    """,
-                    (now, gid)
-                )
+                await safe_db_execute("UPDATE groups SET is_admin_cached = FALSE, last_checked_at = %s WHERE group_id = %s", (now, gid))
         except ChatMigrated as e:
             new_id = e.new_chat_id
-            # ✅ DB migrate old->new (upsert new row + remove old row)
+            ADMIN_VERIFY_CACHE.pop(gid, None)
+            ADMIN_VERIFY_CACHE.pop(new_id, None)
             await safe_db_execute(
                 """
                 INSERT INTO groups (group_id, is_admin_cached, last_checked_at)
                 VALUES (%s, TRUE, %s)
-                ON CONFLICT (group_id)
-                DO UPDATE SET
-                  is_admin_cached = TRUE,
-                  last_checked_at = EXCLUDED.last_checked_at
+                ON CONFLICT (group_id) DO UPDATE SET is_admin_cached = TRUE, last_checked_at = EXCLUDED.last_checked_at
                 """,
                 (new_id, now)
             )
             await safe_db_execute("DELETE FROM groups WHERE group_id=%s", (gid,))
-            # ✅ RAM migrate
             if gid in BOT_ADMIN_CACHE:
                 BOT_ADMIN_CACHE.discard(gid)
                 BOT_ADMIN_CACHE.add(new_id)
             USER_ADMIN_CACHE[new_id] = USER_ADMIN_CACHE.pop(gid, set())
             REMINDER_MESSAGES[new_id] = REMINDER_MESSAGES.pop(gid, [])
-            
-            # ✅ retry admin check using new_id (same loop iteration)
             try:
                 me2 = await app.bot.get_chat_member(new_id, app.bot.id)
                 if me2.status in ("administrator", "creator") and getattr(me2, "can_delete_messages", False):
                     BOT_ADMIN_CACHE.add(new_id)
                     verified += 1
-                    await safe_db_execute(
-                        """
-                        UPDATE groups
-                        SET is_admin_cached = TRUE,
-                            last_checked_at = %s
-                        WHERE group_id = %s
-                        """,
-                        (now, new_id)
-                    )
+                    await safe_db_execute("UPDATE groups SET is_admin_cached = TRUE, last_checked_at = %s WHERE group_id = %s", (now, new_id))
                 else:
                     skipped += 1
-                    await safe_db_execute(
-                        """
-                        UPDATE groups
-                        SET is_admin_cached = FALSE,
-                            last_checked_at = %s
-                        WHERE group_id = %s
-                        """,
-                        (now, new_id)
-                    )
+                    await safe_db_execute("UPDATE groups SET is_admin_cached = FALSE, last_checked_at = %s WHERE group_id = %s", (now, new_id))
             except Exception as e2:
                 print(f"⚠️ Skip migrated admin check for {new_id}: {e2}", flush=True)
         except Exception as e:
             print(f"⚠️ Skip admin check for {gid}: {e}", flush=True)
-
         await asyncio.sleep(0.2)
 
     print(f"✅ Admin cache verified: {verified}", flush=True)
@@ -2740,23 +2129,21 @@ async def purge_non_admin_groups_verified(now: int):
         DELETE FROM groups
         WHERE is_admin_cached = FALSE
           AND last_checked_at = %s
+          AND group_id NOT IN (SELECT group_id FROM groups WHERE is_admin_cached = TRUE)
         """,
         (now,)
     )
-    print("🧹 Startup purge: verified non-admin groups removed", flush=True)
+    print("🧹 Startup purge: non-admin groups removed", flush=True)
 
 async def refresh_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or update.effective_user.id != OWNER_ID:
         return
     msg = update.effective_message
-
     rows = await safe_db_execute("SELECT group_id FROM groups", fetch=True) or []
     BOT_ADMIN_CACHE.clear()
-
     verified = 0
     skipped = 0
     failed = 0
-
     for row in rows:
         gid = row["group_id"]
         try:
@@ -2770,7 +2157,6 @@ async def refresh_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"⚠️ refresh_all skip {gid}: {e}")
             failed += 1
         await asyncio.sleep(0.1)
-
     await msg.reply_text(
         "🔄 <b>Refresh All Completed (SAFE)</b>\n\n"
         f"✅ Admin groups (active): {verified}\n"
@@ -2781,7 +2167,15 @@ async def refresh_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ===============================
-# MAIN (FINAL CORRECT VERSION)
+# ERROR HANDLER
+# ===============================
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    if isinstance(context.error, RetryAfter):
+        return
+    logger.error("Unhandled exception", exc_info=context.error)
+
+# ===============================
+# MAIN
 # ===============================
 def main():
     global pool
@@ -2789,68 +2183,45 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN missing")
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # ✅ concurrent_updates(32) from link-delete bot
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(32).build()
 
     app.add_error_handler(error_handler)
-    # -------------------------------
+
     # Commands
-    # -------------------------------
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("refresh", refresh))
     app.add_handler(CommandHandler("refresh_all", refresh_all))
     app.add_handler(CommandHandler("setwelcomephoto", set_welcome_photo))
-    app.add_handler(CommandHandler("setgoodbyephoto", set_goodbye_photo))    
+    app.add_handler(CommandHandler("setgoodbyephoto", set_goodbye_photo))
     app.add_handler(CommandHandler("packs", packs_command))
+
+    # Callbacks
     app.add_handler(CallbackQueryHandler(pack_group_callback, pattern=r"^pack_group_"))
     app.add_handler(CallbackQueryHandler(set_pack_callback, pattern=r"^setpack_"))
-    app.add_handler(
-        CallbackQueryHandler(
-            photo_pack_callback,
-            pattern="^(set_welcome_pack|set_goodbye_pack):"
-        )
-    )    
+    app.add_handler(CallbackQueryHandler(photo_pack_callback, pattern="^(set_welcome_pack|set_goodbye_pack):"))
     app.add_handler(
         CallbackQueryHandler(
             donate_callback,
             pattern=(
-                r"^(donate|photo_menu|setwelcome_menu|"
-                r"setgoodbye_menu|welcome_pack_|"
-                r"goodbye_pack_|photo_next|"
-                r"photo_prev|setphoto_selectgroup|"
-                r"applyphoto_|setphoto_home)"
+                r"^(donate|photo_menu|setwelcome_menu|setgoodbye_menu|"
+                r"welcome_pack_|goodbye_pack_|photo_next|photo_prev|"
+                r"setphoto_selectgroup|applyphoto_|setphoto_home)"
             )
         )
     )
+
+    # Payments
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
-    # -------------------------------
-    # Chat Member
-    # -------------------------------
-    app.add_handler(
-        ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
-    )
-    
-    # -------------------------------
-    # WELCOME
-    # -------------------------------
-    app.add_handler(
-        ChatMemberHandler(welcome_chat_member, ChatMemberHandler.CHAT_MEMBER),
-        group=1
-    )
+    # Chat member
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    app.add_handler(ChatMemberHandler(welcome_chat_member, ChatMemberHandler.CHAT_MEMBER), group=1)
+    app.add_handler(ChatMemberHandler(goodbye, ChatMemberHandler.CHAT_MEMBER), group=2)
 
-    # -------------------------------
-    # GOODBYE
-    # -------------------------------
-    app.add_handler(
-        ChatMemberHandler(goodbye, ChatMemberHandler.CHAT_MEMBER),
-        group=2
-    )
-    
-    # -------------------------------
-    # Fallback join/leave (message-based)
-    # -------------------------------
+    # Fallback
     app.add_handler(
         MessageHandler(
             filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER,
@@ -2858,10 +2229,8 @@ def main():
         ),
         group=10
     )
-    
-    # -------------------------------
-    # Broadcast
-    # -------------------------------
+
+    # Broadcast (✅ improved from link-delete bot)
     app.add_handler(
         MessageHandler(
             filters.User(OWNER_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL),
@@ -2870,18 +2239,20 @@ def main():
     )
     app.add_handler(CallbackQueryHandler(broadcast_confirm_handler, pattern="broadcast_confirm"))
     app.add_handler(CallbackQueryHandler(broadcast_target_handler, pattern="^bc_target_"))
+    app.add_handler(CallbackQueryHandler(broadcast_post_now_handler, pattern="^bc_post_now$"))
+    app.add_handler(CallbackQueryHandler(broadcast_auto_button_handler, pattern="^bc_btn_auto$"))
+    app.add_handler(CallbackQueryHandler(broadcast_manual_button_handler, pattern="^bc_btn_manual$"))
     app.add_handler(CallbackQueryHandler(broadcast_cancel_handler, pattern="broadcast_cancel"))
-
+    app.add_handler(CallbackQueryHandler(broadcast_preview_send, pattern="^bc_preview_send$"))
+    app.add_handler(CallbackQueryHandler(broadcast_preview_cancel, pattern="^bc_preview_cancel$"))
     app.add_handler(
-        CallbackQueryHandler(
-            photo_pack_callback,
-            pattern="^(set_welcome_pack|set_goodbye_pack):"
+        MessageHandler(
+            filters.User(OWNER_ID) & filters.TEXT & ~filters.COMMAND,
+            broadcast_button_url_receiver
         )
     )
 
-    # -------------------------------
-    # STARTUP HOOK (CORRECT)
-    # -------------------------------
+    # Startup
     async def on_startup(app):
         global pool
         global DB_READY
@@ -2892,12 +2263,8 @@ def main():
         try:
             pool = ConnectionPool(
                 conninfo=(
-                    f"host={DB_HOST} "
-                    f"dbname={DB_NAME} "
-                    f"user={DB_USER} "
-                    f"password={DB_PASS} "
-                    f"port={DB_PORT} "
-                    f"sslmode=require"
+                    f"host={DB_HOST} dbname={DB_NAME} user={DB_USER} "
+                    f"password={DB_PASS} port={DB_PORT} sslmode=require"
                 ),
                 min_size=1,
                 max_size=5,
@@ -2908,7 +2275,6 @@ def main():
             DB_READY = True
         except Exception as e:
             print("❌ DB pool creation failed:", e, flush=True)
-            # Production: keep bot alive even if DB is down
             pool = None
             DB_READY = False
             print("⚠️ DB disabled, bot will run without DB features", flush=True)
@@ -2924,7 +2290,6 @@ def main():
 
         print("🤖 MissOlivia Bot running (PRODUCTION READY)", flush=True)
 
-    # ✅ IMPORTANT
     app.post_init = on_startup
 
     try:
@@ -2932,8 +2297,8 @@ def main():
             allowed_updates=[
                 "message",
                 "callback_query",
-                "chat_member",       # ✅ Welcome/Goodbye အတွက် အရေးကြီး
-                "my_chat_member",    # ✅ Bot admin status အတွက်
+                "chat_member",
+                "my_chat_member",
                 "pre_checkout_query",
             ],
             close_loop=False
