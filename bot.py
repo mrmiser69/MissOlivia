@@ -1422,7 +1422,9 @@ async def broadcast_button_url_receiver(update: Update, context: ContextTypes.DE
 
 async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    chat_id = query.message.chat.id if query else update.effective_chat.id
+    chat_id = (query.message.chat.id if query and query.message else None) or (update.effective_chat.id if update.effective_chat else None)
+    if not chat_id:
+        return
 
     preview = PENDING_PREVIEW.get(OWNER_ID)
     if not preview:
@@ -2167,6 +2169,22 @@ async def refresh_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ===============================
+# RAM cleanup job
+# ===============================
+async def cleanup_memory_cache(context: ContextTypes.DEFAULT_TYPE):
+    now = int(time.time())
+    cutoff = now - 3600  # 1 hour
+    for key in list(LAST_WELCOME_TS.keys()):
+        if LAST_WELCOME_TS[key] < cutoff:
+            LAST_WELCOME_TS.pop(key, None)
+    for key in list(LAST_GOODBYE_TS.keys()):
+        if LAST_GOODBYE_TS[key] < cutoff:
+            LAST_GOODBYE_TS.pop(key, None)
+    for key in list(FALLBACK_EVENT_TS.keys()):
+        if FALLBACK_EVENT_TS[key] < cutoff:
+            FALLBACK_EVENT_TS.pop(key, None)
+
+# ===============================
 # ERROR HANDLER
 # ===============================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -2235,7 +2253,15 @@ def main():
         MessageHandler(
             filters.User(OWNER_ID) & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.Document.ALL),
             broadcast
-        )
+        ),
+        group=5
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.User(OWNER_ID) & filters.TEXT & ~filters.COMMAND,
+            broadcast_button_url_receiver
+        ),
+        group=4  
     )
     app.add_handler(CallbackQueryHandler(broadcast_confirm_handler, pattern="broadcast_confirm"))
     app.add_handler(CallbackQueryHandler(broadcast_target_handler, pattern="^bc_target_"))
@@ -2287,6 +2313,9 @@ def main():
             now = await refresh_admin_cache(app)
             print("✅ Admin cache refreshed", flush=True)
             await purge_non_admin_groups_verified(now)
+
+        if app.job_queue:
+            app.job_queue.run_repeating(cleanup_memory_cache, interval=1800, first=1800)
 
         print("🤖 MissOlivia Bot running (PRODUCTION READY)", flush=True)
 
