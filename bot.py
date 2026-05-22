@@ -5,17 +5,14 @@ import os
 import time
 import asyncio
 import contextlib
-import re
 from html import escape
 from datetime import datetime
-from typing import Optional
 import logging
 
 from telegram import (
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ChatPermissions,
     InputMediaPhoto,
 )
 from telegram.error import RetryAfter, Forbidden, BadRequest, ChatMigrated
@@ -2271,12 +2268,6 @@ def main():
     app.add_handler(CallbackQueryHandler(broadcast_cancel_handler, pattern="broadcast_cancel"))
     app.add_handler(CallbackQueryHandler(broadcast_preview_send, pattern="^bc_preview_send$"))
     app.add_handler(CallbackQueryHandler(broadcast_preview_cancel, pattern="^bc_preview_cancel$"))
-    app.add_handler(
-        MessageHandler(
-            filters.User(OWNER_ID) & filters.TEXT & ~filters.COMMAND,
-            broadcast_button_url_receiver
-        )
-    )
 
     # Startup
     async def on_startup(app):
