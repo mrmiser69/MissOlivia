@@ -446,13 +446,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             ])
         buttons.append([InlineKeyboardButton("🤍 𝗗𝗢𝗡𝗔𝗧𝗘 𝗨𝗦 🤍", callback_data="donate_menu")])
-        buttons.append([InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢", callback_data="photo_menu")])
+        buttons.append([InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢 🖼", callback_data="photo_menu")])
         buttons.append([
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
             InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
         ])
         buttons.append([
-            InlineKeyboardButton("📖 အသုံးပြုနည်း နှင့် သတိပေးချက်", callback_data="help_menu")
+            InlineKeyboardButton("📖 အသုံးပြုနည်း နှင့် သတိပေးချက် 📖", callback_data="help_menu")
         ])
         
         try:
@@ -792,13 +792,13 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if bot_username:
             buttons.append([InlineKeyboardButton("➕ 𝗔𝗗𝗗 𝗠𝗘 𝗧𝗢 𝗬𝗢𝗨𝗥 𝗚𝗥𝗢𝗨𝗣", url=f"https://t.me/{bot_username}?startgroup=true")])
         buttons.append([InlineKeyboardButton("🤍 𝗗𝗢𝗡𝗔𝗧𝗘 𝗨𝗦 🤍", callback_data="donate_menu")])
-        buttons.append([InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢", callback_data="photo_menu")])
+        buttons.append([InlineKeyboardButton("🖼 𝗦𝗘𝗧 𝗣𝗛𝗢𝗧𝗢 🖼", callback_data="photo_menu")])
         buttons.append([
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
             InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
         ])
         buttons.append([
-            InlineKeyboardButton("📖 အသုံးပြုနည်း နှင့် သတိပေးချက်", callback_data="help_menu")
+            InlineKeyboardButton("📖 အသုံးပြုနည်း နှင့် သတိပေးချက် 📖", callback_data="help_menu")
         ])        
 
         await query.message.edit_caption(
@@ -853,7 +853,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "➖➖➖➖➖➖➖➖➖➖➖➖\n"
             "<blockquote>"
             "<b>➊ Welcome And GoodBye Message သည် Bot ကို Group ထဲထည့်ပြီး Admin ပေးလိုက်တာနဲ့ အလုပ်လုပ်မှာဖြစ်ပါတယ်။</b>\n\n"
-            "<b>➋ Set Photo ခလုတ်ကိုနှိပ်ပြီး မိမိရဲ့ Group မှာ Welcome And Goodbye Message ပုံတွေကိုရွေးချယ်အသုံးပြုနိုင်ပါတယ်။</b>"
+            "<b>➋ 🖼 Set Photo 🖼 ခလုတ်ကိုနှိပ်ပြီး မိမိရဲ့ Group မှာ Welcome And Goodbye Message ပုံတွေကိုရွေးချယ်အသုံးပြုနိုင်ပါတယ်။</b>"
             "</blockquote>"
         )
         kb = InlineKeyboardMarkup([
