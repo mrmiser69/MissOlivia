@@ -126,6 +126,7 @@ LAST_GOODBYE_TS = {}
 
 FALLBACK_EVENT_TS = {}
 FALLBACK_DEBOUNCE_SECONDS = 3
+HELP_CALLBACK = "help_menu"
 
 LOG_RATE_CACHE = {}
 LOG_RATE_SECONDS = 60
@@ -450,7 +451,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
             InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
         ])
-
+        buttons.append([
+            InlineKeyboardButton("📖 အသုံးပြုနည်း နှင့် သတိပေးချက်", callback_data="help_menu")
+        ])
+        
         try:
             await msg.reply_photo(
                 photo=START_IMAGE,
@@ -793,6 +797,10 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("👨‍💻 𝐃𝐞𝐯𝐞𝐥𝐨𝐩𝐞𝐫", url="tg://user?id=5942810488"),
             InlineKeyboardButton("📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥", url="https://t.me/MMTelegramBotss"),
         ])
+        buttons.append([
+            InlineKeyboardButton("📖 အသုံးပြုနည်း နှင့် သတိပေးချက်", callback_data="help_menu")
+        ])        
+
         await query.message.edit_caption(
             caption=start_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -827,6 +835,35 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             await query.answer(f"❌ Donate မလုပ်နိုင်ပါ: {e}", show_alert=True)
+        return
+
+
+    # ========================
+    # HELP MENU
+    # ========================
+    if data == "help_menu":
+        help_text = (
+            "<b>⚠️ သတိပေးချက်</b>\n"
+            "➖➖➖➖➖➖➖➖➖➖➖➖\n"
+            "<blockquote>"
+            "မိမိရဲ့ Group မှာ အရင်ကအသုံးပြုထားသည့် Welcome And Goodbye Message ပို့သည့် Bot များကို Group ထဲကအရင်ဆုံးထုတ်ထားပေးပါဗျ။ ဒါမှ Oggy And Olivia က ကောင်းကောင်းအလုပ်လုပ်နိုင်မှာဖြစ်ပါတယ်။\n\n"
+            "အရင်ထည့်ထားတဲ့ Bot ရှိနေရင် အရင်ထည့်ထားတဲ့ Bot ကပဲ Welcome And GoodBye Message ကို အရင်ပို့သွားမှာဖြစ်လို့ Oggy And Olivia ရဲ့ Welcome And GoodBye Message က အလုပ်မလုပ်ပဲဖြစ်နေမှာဖြစ်ပါတယ်။"
+            "</blockquote>\n\n"
+            "<b>📖 အသုံးပြုနည်း</b>\n"
+            "➖➖➖➖➖➖➖➖➖➖➖➖\n"
+            "<blockquote>"
+            "<b>➊ Welcome And GoodBye Message သည် Bot ကို Group ထဲထည့်ပြီး Admin ပေးလိုက်တာနဲ့ အလုပ်လုပ်မှာဖြစ်ပါတယ်။</b>\n\n"
+            "<b>➋ Set Photo ခလုတ်ကိုနှိပ်ပြီး မိမိရဲ့ Group မှာ Welcome And Goodbye Message ပုံတွေကိုရွေးချယ်အသုံးပြုနိုင်ပါတယ်။</b>"
+            "</blockquote>"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ 𝐁𝐚𝐜𝐤 𝐭𝐨 𝐌𝐚𝐢𝐧 𝐌𝐞𝐧𝐮", callback_data="donate_back_start")]
+        ])
+        await query.message.edit_caption(
+            caption=help_text,
+            parse_mode="HTML",
+            reply_markup=kb
+        )
         return
 
 # ===============================
@@ -2222,7 +2259,7 @@ def main():
             pattern=(
                 r"^(donate|photo_menu|setwelcome_menu|setgoodbye_menu|"
                 r"welcome_pack_|goodbye_pack_|photo_next|photo_prev|"
-                r"setphoto_selectgroup|applyphoto_|setphoto_home)"
+                r"setphoto_selectgroup|applyphoto_|setphoto_home|help_menu)"
             )
         )
     )
