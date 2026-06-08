@@ -417,7 +417,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         text = (
-            f"<b>────「 {bot_mention} 」────</b>\n\n"
+            f"<b>────「 {bot_mention} 」</b>\n\n"
             f"<b>ဟယ်လို {user_mention} ! 👋</b>\n\n"
             "<b>ငါသည် Group များအတွက် အသုံးဝင် Bot တစ်ခုဖြစ်တယ်။</b>\n"
             "<b>ငါ၏လုပ်နိုင်စွမ်းကို ကောင်းကောင်းအသုံးချပါ။</b>\n\n"
@@ -769,7 +769,7 @@ async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if bot_username else bot_name
         )
         start_text = (
-            f"<b>────「 {bot_mention} 」────</b>\n\n"
+            f"<b>────「 {bot_mention} 」</b>\n\n"
             f"<b>ဟယ်လို {user_mention} ! 👋</b>\n\n"
             "<b>ငါသည် Group များအတွက် အသုံးဝင် Bot တစ်ခုဖြစ်တယ်။</b>\n"
             "<b>ငါ၏လုပ်နိုင်စွမ်းကို ကောင်းကောင်းအသုံးချပါ။</b>\n\n"
